@@ -2,6 +2,7 @@ import asyncio
 from contextlib import suppress
 import logging
 import os
+import re
 
 import discord
 from discord.ext import commands
@@ -59,6 +60,16 @@ def split_message(content: str, limit: int = 2_000) -> list[str]:
     return [content[start : start + limit] for start in range(0, len(content), limit)]
 
 
+def extract_mention_question(message: discord.Message) -> str | None:
+    if bot.user is None or not bot.user.mentioned_in(message):
+        return None
+
+    mention_pattern = rf"<@!?{bot.user.id}>"
+    question = re.sub(mention_pattern, "", message.content)
+    question = re.sub(r"\s+([,;:?!])", r"\1", question)
+    return question.strip(" ,;:-")
+
+
 def is_listened_channel(channel: discord.abc.GuildChannel | discord.Thread) -> bool:
     parent_id = getattr(channel, "parent_id", None)
     return channel.id in LISTEN_CHANNEL_IDS or parent_id in LISTEN_CHANNEL_IDS
@@ -77,6 +88,57 @@ async def store_message(message: discord.Message) -> None:
         await save_message(message)
     except Exception:
         logger.exception("Could not store Discord message %s", message.id)
+
+
+async def answer_question(
+    message: discord.Message,
+    question: str,
+    *,
+    reply_to_message: bool,
+) -> None:
+    try:
+        async with message.channel.typing():
+            conversation_context = ""
+            if message.guild is not None and is_listened_channel(message.channel):
+                try:
+                    search_query = build_history_search_query(question)
+                    relevant_messages = await search_messages(
+                        message.guild.id,
+                        search_query,
+                        exclude_message_id=message.id,
+                    )
+                    recent_messages = await get_recent_messages(
+                        message.channel.id,
+                        exclude_message_id=message.id,
+                        limit=15,
+                    )
+                    conversation_context = format_conversation_context(
+                        relevant_messages,
+                        recent_messages,
+                    )
+                except Exception:
+                    logger.exception("Could not load Discord history context")
+
+            answer = await ask_openai(question, conversation_context)
+    except OpenAIError:
+        logger.exception("OpenAI request failed")
+        await message.channel.send(
+            "I couldn't reach OpenAI. Please try again in a moment."
+        )
+        return
+
+    for index, chunk in enumerate(split_message(answer)):
+        if reply_to_message and index == 0:
+            await message.reply(
+                chunk,
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await message.channel.send(
+                chunk,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
 
 async def sync_channel_history(channel_id: int) -> None:
@@ -170,8 +232,26 @@ async def on_message(message: discord.Message):
     if should_store_message(message):
         await store_message(message)
 
-    if not message.author.bot:
-        await bot.process_commands(message)
+    if message.author.bot:
+        return
+
+    mention_question = extract_mention_question(message)
+    if mention_question is not None:
+        if not mention_question:
+            await message.reply(
+                "Mention me followed by a question, for example: "
+                "`@JAS AI what did we decide about cameras?`",
+                mention_author=False,
+            )
+        else:
+            await answer_question(
+                message,
+                mention_question,
+                reply_to_message=True,
+            )
+        return
+
+    await bot.process_commands(message)
 
 
 @bot.event
@@ -238,37 +318,11 @@ async def ask(ctx, *, question: str | None = None):
         await ctx.send("Usage: `!ask your question here`")
         return
 
-    try:
-        async with ctx.typing():
-            conversation_context = ""
-            if ctx.guild is not None and is_listened_channel(ctx.channel):
-                try:
-                    search_query = build_history_search_query(question)
-                    relevant_messages = await search_messages(
-                        ctx.guild.id,
-                        search_query,
-                        exclude_message_id=ctx.message.id,
-                    )
-                    recent_messages = await get_recent_messages(
-                        ctx.channel.id,
-                        exclude_message_id=ctx.message.id,
-                        limit=15,
-                    )
-                    conversation_context = format_conversation_context(
-                        relevant_messages,
-                        recent_messages,
-                    )
-                except Exception:
-                    logger.exception("Could not load Discord history context")
-
-            answer = await ask_openai(question, conversation_context)
-    except OpenAIError:
-        logger.exception("OpenAI request failed")
-        await ctx.send("I couldn't reach OpenAI. Please try again in a moment.")
-        return
-
-    for chunk in split_message(answer):
-        await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+    await answer_question(
+        ctx.message,
+        question,
+        reply_to_message=False,
+    )
 
 
 if __name__ == "__main__":

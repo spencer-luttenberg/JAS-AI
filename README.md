@@ -3,7 +3,7 @@
 Jarrett AI is a Discord bot with OpenAI-powered answers and PostgreSQL-backed
 long-term memory. It records every human message and its own replies in the
 Discord channels you approve, imports accessible older history, and searches
-that archive when someone uses `!ask`.
+that archive when someone mentions `@JAS AI` with a question.
 
 This tutorial covers the complete setup for Discord, OpenAI, Railway, and
 PostgreSQL.
@@ -214,22 +214,27 @@ The bot should answer:
 Pong!
 ```
 
-Then test OpenAI:
+Then test OpenAI. Type `@JAS AI`, select the bot from Discord's autocomplete so
+it becomes a real mention, and add the question after it:
 
 ```text
-!ask Summarize what we have discussed about camera repairs.
+@JAS AI Summarize what we have discussed about camera repairs.
 ```
 
 After the backfill completes, ask about an older topic using a few distinctive
 words that appeared in the original conversation:
 
 ```text
-!ask What did we decide about guards repairing disabled cameras?
+@JAS AI What did we decide about guards repairing disabled cameras?
 ```
+
+Typing the bot's name as plain text is not enough; Discord must render it as a
+clickable mention. The `!ask` command remains available as a fallback.
 
 Every new human message in an approved channel is stored immediately, even
 when nobody uses a bot command. Ordinary message ingestion does not call
-OpenAI. OpenAI is called only for `!ask`.
+OpenAI. OpenAI is called only when the bot is mentioned with a question or
+someone uses `!ask`.
 
 ## 8. Verify the PostgreSQL Data
 
@@ -352,7 +357,8 @@ Instead:
 1. Every human message and Jarrett AI reply in approved channels is stored in
    PostgreSQL.
 2. PostgreSQL maintains a full-text search index automatically.
-3. `!ask` searches the complete stored server history for relevant messages.
+3. Mentioning `@JAS AI` with a question searches the complete stored server
+   history for relevant messages.
 4. The bot also loads the 15 most recent messages from the current channel.
 5. Relevant old messages, recent conversation, and the current question are
    sent to OpenAI.
@@ -369,9 +375,10 @@ questions.
 
 ## Commands
 
+- `@JAS AI <question>` is the primary way to ask a question
 - `!ping` replies with `Pong!`
 - `!hello` mentions the user who ran the command
-- `!ask <question>` searches long-term history and asks OpenAI
+- `!ask <question>` provides a command-based fallback
 
 ## Troubleshooting
 
@@ -402,7 +409,7 @@ the Discord Developer Portal, then restart the bot.
 Grant **View Channel** and **Read Message History** for that channel. Confirm
 the ID belongs to a channel in a server where the bot is installed.
 
-### `!ask` Says It Cannot Reach OpenAI
+### A Mention or `!ask` Says It Cannot Reach OpenAI
 
 Check that:
 
