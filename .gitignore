@@ -150,6 +150,8 @@ activemq-data/
 # Environments
 .env
 .envrc
+service-account*.json
+google-service-account*.json
 .venv
 env/
 venv/

@@ -2,6 +2,7 @@ import json
 import re
 from collections.abc import Sequence
 
+from database.drive_files import StoredDriveChunk
 from database.messages import StoredMessage
 
 
@@ -90,6 +91,32 @@ def format_conversation_context(
         )
 
     return "\n\n".join(sections)
+
+
+def format_drive_context(
+    chunks: Sequence[StoredDriveChunk],
+    *,
+    max_characters: int = 12_000,
+) -> str:
+    lines = [
+        json.dumps(
+            {
+                "file_id": chunk.file_id,
+                "file_name": chunk.file_name,
+                "source_url": chunk.web_view_link,
+                "modified_at": (
+                    chunk.modified_at.isoformat() if chunk.modified_at else None
+                ),
+                "content": chunk.content,
+            },
+            ensure_ascii=True,
+        )
+        for chunk in chunks
+    ]
+    selected_lines = _fit_lines(lines, max_characters, keep_end=False)
+    if not selected_lines:
+        return ""
+    return "RELEVANT GOOGLE DRIVE FILE EXCERPTS:\n" + "\n".join(selected_lines)
 
 
 def _serialize_message(message: StoredMessage) -> str:

@@ -2,11 +2,12 @@
 
 Jarrett AI is a Discord bot with OpenAI-powered answers and PostgreSQL-backed
 long-term memory. It records every human message and its own replies in the
-Discord channels you approve, imports accessible older history, and searches
-that archive when someone mentions `@JAS AI` with a question.
+Discord channels you approve, imports accessible older history, indexes files
+from Google Drive, and searches those sources when someone mentions `@JAS AI`
+with a question.
 
-This tutorial covers the complete setup for Discord, OpenAI, Railway, and
-PostgreSQL.
+This tutorial covers the complete setup for Discord, OpenAI, Railway,
+PostgreSQL, and Google Drive.
 
 ## Before You Start
 
@@ -16,6 +17,7 @@ You need:
 - The bot installed in your Discord server
 - A regenerated Discord bot token that has never been shared publicly
 - An OpenAI API key
+- A Google account and Google Cloud project for Drive access
 - A Railway project containing the Python bot service
 - This repository connected to the Railway bot service
 - Python 3.13 if you also want to run the bot locally
@@ -108,6 +110,7 @@ the SQL files in `database/migrations/` and creates:
 
 - `discord_messages`
 - `discord_channel_sync_state`
+- `google_drive_files`, `google_drive_chunks`, and Drive sync tracking tables
 - The indexes used for chronological and full-text history searches
 
 ## 4. Connect the Bot Service to PostgreSQL
@@ -150,7 +153,87 @@ Example `LISTEN_CHANNEL_IDS` value:
 
 Do not add spaces, `#` channel-name prefixes, or quotes.
 
-## 5. Configure and Deploy the Bot Service
+## 5. Configure Google Drive Reading
+
+Google Drive access is optional. Without the variables in this section, the
+bot continues to work with Discord history only.
+
+This setup uses a read-only Google service account. For a personal **My
+Drive**, put everything the bot should read beneath one top-level folder and
+share that folder with the service account. Access is inherited by its
+subfolders. For a Google Workspace **Shared Drive**, add the service account as
+a member and use the Shared Drive root folder ID.
+
+### Create the Google Service Account
+
+1. Open the [Google Cloud Console](https://console.cloud.google.com/).
+2. Create a project or select the project you want to use for Jarrett AI.
+3. Open **APIs & Services > Library**.
+4. Search for **Google Drive API**, open it, and select **Enable**.
+5. Open **IAM & Admin > Service Accounts**.
+6. Select **Create service account**.
+7. Name it `jas-ai-drive-reader`, then finish creating it. It does not need a
+   Google Cloud IAM role because file access is granted from Google Drive.
+8. Open the new service account and copy its email address. It ends in
+   `iam.gserviceaccount.com`.
+9. Open the service account's **Keys** tab.
+10. Select **Add key > Create new key > JSON > Create**.
+11. Keep the downloaded JSON file private. It contains a credential that can
+    act as the service account.
+
+### Share the Drive Content
+
+For a personal My Drive:
+
+1. Create or choose one top-level folder containing everything Jarrett AI may
+   read.
+2. Right-click that folder and select **Share**.
+3. Add the service-account email as a **Viewer**.
+4. Open the folder and copy its URL. The folder ID is the value after
+   `/folders/`; the bot accepts either the ID or the complete folder URL.
+
+For a Shared Drive, add the service-account email as a member with at least
+**Viewer** access and copy the URL of the Shared Drive's root folder.
+
+Only share content that Discord users in your approved channels are allowed to
+retrieve. The bot only supplies Drive results inside channels configured in
+`LISTEN_CHANNEL_IDS`.
+
+### Encode the Credential for Railway
+
+In PowerShell, replace the example path with the downloaded JSON file path:
+
+```powershell
+[Convert]::ToBase64String(
+    [IO.File]::ReadAllBytes("$HOME\Downloads\jas-ai-drive-reader.json")
+) | Set-Clipboard
+```
+
+This puts the base64-encoded credential on the clipboard. It does not print
+the secret in the terminal. Add these variables to the Railway **JAS-AI bot
+service**:
+
+| Variable name | Value |
+| --- | --- |
+| `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` | Paste the base64 value from the clipboard |
+| `GOOGLE_DRIVE_FOLDER_IDS` | The shared folder ID or complete folder URL |
+| `GOOGLE_DRIVE_SYNC_INTERVAL_SECONDS` | Optional; defaults to `3600` (one hour) |
+
+To index multiple folders, separate their IDs with commas. The minimum sync
+interval is five minutes. After storing the credential securely in Railway,
+remove the downloaded JSON key from locations where it is no longer needed.
+
+The indexer reads:
+
+- Google Docs, Sheets, Slides, and Drawings
+- PDF, DOCX, XLSX, and PPTX files
+- Plain text, Markdown, CSV, TSV, JSON, XML, YAML, logs, and source text
+
+Images, audio, video, Google Forms, shortcuts, legacy Office formats, and
+other unsupported binaries are skipped. Image-only or scanned PDFs need OCR
+before their text becomes searchable.
+
+## 6. Configure and Deploy the Bot Service
 
 Railway normally detects the Python start command automatically. To set it
 explicitly:
@@ -167,9 +250,9 @@ explicitly:
 5. Apply the staged variable/settings changes or select **Redeploy**.
 
 Railway installs `requirements.txt`, starts `bot.py`, connects to PostgreSQL,
-and applies both database migrations automatically.
+and applies all database migrations automatically.
 
-## 6. Watch the First Deployment
+## 7. Watch the First Deployment
 
 Open the bot service's deployment logs. A successful startup should include
 messages similar to:
@@ -177,11 +260,14 @@ messages similar to:
 ```text
 Applying database migration 001_create_discord_messages.sql
 Applying database migration 002_add_long_term_search.sql
+Applying database migration 003_create_google_drive_index.sql
 Logged in as Jarrett AI
 Connected to 1 server(s)
 Recording 2 configured channel(s)
 Starting full backfill for Discord channel 123456789012345678
 Finished full backfill for channel 123456789012345678; stored 850 message(s)
+Starting Google Drive sync for folder 1AbCdEfGhIjKlMnOp
+Google Drive sync complete: 1 root(s), 42 file(s) seen, 40 indexed, 0 unchanged, 2 skipped
 ```
 
 The first deployment imports all accessible history for every ID in
@@ -200,7 +286,11 @@ Finished catch-up for channel 123456789012345678; stored 12 message(s)
 The bot remains online while the background history import runs, but its
 long-term answers are most complete after the first backfill finishes.
 
-## 7. Test the Bot in Discord
+The Google Drive sync runs in the background at startup and then at the
+configured interval. A skipped-file warning includes the file name and reason;
+it does not stop the rest of the sync.
+
+## 8. Test the Bot in Discord
 
 In an approved channel, send:
 
@@ -213,6 +303,16 @@ The bot should answer:
 ```text
 Pong!
 ```
+
+After the first Google Drive sync completes, ask about a distinctive phrase in
+one of the files:
+
+```text
+@JAS AI What does the equipment checklist say about camera repairs?
+```
+
+When an answer relies on Drive content, the bot is instructed to name the
+source file and include its Google Drive link when useful.
 
 Then test OpenAI. Type `@JAS AI`, select the bot from Discord's autocomplete so
 it becomes a real mention, and add the question after it:
@@ -236,7 +336,7 @@ when nobody uses a bot command. Ordinary message ingestion does not call
 OpenAI. OpenAI is called only when the bot is mentioned with a question or
 someone uses `!ask`.
 
-## 8. Verify the PostgreSQL Data
+## 9. Verify the PostgreSQL Data
 
 The most reliable command-line method is Railway CLI plus PostgreSQL's `psql`
 client.
@@ -294,13 +394,28 @@ FROM discord_channel_sync_state
 ORDER BY channel_id;
 ```
 
+Check the Google Drive index and any skipped files:
+
+```sql
+SELECT name, mime_type, indexed_at, last_error
+FROM google_drive_files
+ORDER BY name;
+```
+
+Check the number of searchable chunks:
+
+```sql
+SELECT COUNT(*) AS searchable_drive_chunks
+FROM google_drive_chunks;
+```
+
 Exit `psql` with:
 
 ```text
 \q
 ```
 
-## 9. Run Locally (Optional)
+## 10. Run Locally (Optional)
 
 Railway deployment is the normal always-on setup. Local testing requires a
 database URL reachable from your computer.
@@ -328,6 +443,10 @@ $env:DISCORD_TOKEN="YOUR_REGENERATED_DISCORD_TOKEN"
 $env:OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
 $env:DATABASE_URL="YOUR_RAILWAY_DATABASE_PUBLIC_URL"
 $env:LISTEN_CHANNEL_IDS="123456789012345678,234567890123456789"
+$env:GOOGLE_DRIVE_FOLDER_IDS="YOUR_GOOGLE_DRIVE_FOLDER_ID"
+$env:GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=[Convert]::ToBase64String(
+    [IO.File]::ReadAllBytes("$HOME\Downloads\jas-ai-drive-reader.json")
+)
 
 python bot.py
 ```
@@ -335,7 +454,7 @@ python bot.py
 PowerShell `$env:` values apply only to the current terminal session. Opening a
 new terminal requires setting them again.
 
-## 10. Add Another Channel Later
+## 11. Add Another Channel Later
 
 1. Give the bot **View Channel**, **Read Message History**, and **Send
    Messages** permissions in the new channel.
@@ -360,9 +479,10 @@ Instead:
 3. Mentioning `@JAS AI` with a question searches the complete stored server
    history for relevant messages.
 4. The bot also loads the 15 most recent messages from the current channel.
-5. Relevant old messages, recent conversation, and the current question are
-   sent to OpenAI.
-6. The answer is posted to Discord and stored like other Jarrett AI replies.
+5. PostgreSQL searches indexed Google Drive chunks for the same topic.
+6. Relevant old messages, recent conversation, Drive excerpts, and the current
+   question are sent to OpenAI.
+7. The answer is posted to Discord and stored like other Jarrett AI replies.
 
 DMs, messages from other bots, and channels absent from `LISTEN_CHANNEL_IDS`
 are not stored. Message edits update the stored row. Discord deletion events
@@ -379,6 +499,8 @@ questions.
 - `!ping` replies with `Pong!`
 - `!hello` mentions the user who ran the command
 - `!ask <question>` provides a command-based fallback
+- `!syncdrive` starts an immediate Drive refresh for the Discord application
+  owner
 
 ## Troubleshooting
 
@@ -418,6 +540,24 @@ Check that:
 - `OPENAI_MODEL`, if set, names a model available to that project
 - The Railway bot service was redeployed after changing the key
 
+### Google Drive Sync Finds Zero Files
+
+Check all of the following:
+
+- The Google Drive API is enabled in the same Google Cloud project as the
+  service account
+- The folder was shared directly with the service-account email as a Viewer
+- `GOOGLE_DRIVE_FOLDER_IDS` contains the folder ID or URL, not its display name
+- Both Google Drive variables are on the Railway bot service and were deployed
+- For a Shared Drive, the service account was added as a drive member
+
+### Google Drive Authentication Fails
+
+Create a new JSON key for the service account, base64-encode the complete file,
+replace `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, and redeploy. Do not add quotes or
+the variable name to its value. Delete the old key in Google Cloud if it may
+have been exposed.
+
 ### Railway Cannot Determine How to Start the Service
 
 Set the bot service's Start Command to:
@@ -441,6 +581,8 @@ python -m pip check
 
 - Never commit or share `DISCORD_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`, or
   `DATABASE_PUBLIC_URL`.
+- Treat the Google service-account JSON as a password. Never commit it, post
+  it in Discord, or include it in screenshots.
 - Reset any secret immediately if it is exposed.
 - Only record channels whose members know their messages are being retained.
 - Review your retention policy before storing private or sensitive discussion.
@@ -451,6 +593,9 @@ python -m pip check
 
 - [Discord privileged intents](https://discord.com/developers/docs/events/gateway#privileged-intents)
 - [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart/)
+- [Google service-account authentication](https://developers.google.com/identity/protocols/oauth2/service-account)
+- [Google Drive file search](https://developers.google.com/workspace/drive/api/guides/search-files)
+- [Google Drive downloads and exports](https://developers.google.com/workspace/drive/api/guides/manage-downloads)
 - [Railway PostgreSQL](https://docs.railway.com/databases/postgresql)
 - [Railway reference variables](https://docs.railway.com/variables#referencing-another-services-variable)
 - [Railway start commands](https://docs.railway.com/deployments/start-command)

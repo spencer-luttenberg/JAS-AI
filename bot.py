@@ -9,8 +9,13 @@ from discord.ext import commands
 from openai import OpenAIError
 
 from ai.client import ask_openai
-from ai.context import build_history_search_query, format_conversation_context
+from ai.context import (
+    build_history_search_query,
+    format_conversation_context,
+    format_drive_context,
+)
 from database.db import close_database, connect_database
+from database.drive_files import search_drive_files
 from database.messages import (
     delete_message,
     delete_messages,
@@ -21,6 +26,8 @@ from database.messages import (
     save_message,
     search_messages,
 )
+from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
+from google_drive.sync import run_google_drive_sync_forever, sync_google_drive
 
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
@@ -39,6 +46,7 @@ intents.message_content = True
 
 class JarrettBot(commands.Bot):
     history_sync_task: asyncio.Task[None] | None = None
+    drive_sync_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
         await connect_database()
@@ -48,6 +56,11 @@ class JarrettBot(commands.Bot):
             self.history_sync_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.history_sync_task
+
+        if self.drive_sync_task is not None and not self.drive_sync_task.done():
+            self.drive_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.drive_sync_task
 
         await close_database()
         await super().close()
@@ -99,9 +112,10 @@ async def answer_question(
     try:
         async with message.channel.typing():
             conversation_context = ""
+            drive_context = ""
             if message.guild is not None and is_listened_channel(message.channel):
+                search_query = build_history_search_query(question)
                 try:
-                    search_query = build_history_search_query(question)
                     relevant_messages = await search_messages(
                         message.guild.id,
                         search_query,
@@ -119,7 +133,21 @@ async def answer_question(
                 except Exception:
                     logger.exception("Could not load Discord history context")
 
-            answer = await ask_openai(question, conversation_context)
+                if google_drive_is_configured():
+                    try:
+                        drive_chunks = await search_drive_files(
+                            search_query,
+                            root_ids=get_google_drive_root_ids(),
+                        )
+                        drive_context = format_drive_context(drive_chunks)
+                    except Exception:
+                        logger.exception("Could not load Google Drive context")
+
+            answer = await ask_openai(
+                question,
+                conversation_context,
+                drive_context,
+            )
     except OpenAIError:
         logger.exception("OpenAI request failed")
         await message.channel.send(
@@ -226,6 +254,22 @@ async def on_ready():
             name="discord-history-sync",
         )
 
+    if google_drive_is_configured() and (
+        bot.drive_sync_task is None or bot.drive_sync_task.done()
+    ):
+        bot.drive_sync_task = asyncio.create_task(
+            run_google_drive_sync_forever(),
+            name="google-drive-sync",
+        )
+    elif get_google_drive_root_ids() or os.getenv(
+        "GOOGLE_SERVICE_ACCOUNT_JSON_BASE64"
+    ) or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
+        logger.warning(
+            "Google Drive indexing is disabled because both "
+            "GOOGLE_DRIVE_FOLDER_IDS and a Google service-account credential "
+            "are required"
+        )
+
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -322,6 +366,30 @@ async def ask(ctx, *, question: str | None = None):
         ctx.message,
         question,
         reply_to_message=False,
+    )
+
+
+@bot.command()
+@commands.is_owner()
+async def syncdrive(ctx):
+    if not google_drive_is_configured():
+        await ctx.send("Google Drive indexing is not configured.")
+        return
+
+    await ctx.send("Starting Google Drive sync...")
+    try:
+        result = await sync_google_drive()
+    except Exception:
+        logger.exception("Manual Google Drive sync failed")
+        await ctx.send("Google Drive sync failed. Check the deployment logs.")
+        return
+
+    await ctx.send(
+        "Google Drive sync complete: "
+        f"{result.files_seen} file(s) found, "
+        f"{result.files_indexed} indexed, "
+        f"{result.files_unchanged} unchanged, "
+        f"{result.files_skipped} skipped."
     )
 
 
