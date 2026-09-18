@@ -326,3 +326,62 @@ async def search_drive_files(
         )
         for record in records
     ]
+
+
+async def get_recent_drive_chunks(
+    root_ids: Sequence[str],
+    *,
+    limit: int = 12,
+) -> list[StoredDriveChunk]:
+    if not root_ids:
+        return []
+
+    records = await get_pool().fetch(
+        """
+        WITH ranked_chunks AS (
+            SELECT
+                chunks.file_id,
+                chunks.file_name,
+                files.mime_type,
+                files.web_view_link,
+                files.modified_at,
+                chunks.content,
+                ROW_NUMBER() OVER (
+                    PARTITION BY chunks.file_id
+                    ORDER BY chunks.chunk_index
+                ) AS chunk_rank
+            FROM google_drive_chunks AS chunks
+            JOIN google_drive_files AS files USING (file_id)
+            WHERE EXISTS (
+                SELECT 1
+                FROM google_drive_file_roots AS roots
+                WHERE roots.file_id = chunks.file_id
+                  AND roots.root_id = ANY($1::text[])
+            )
+        )
+        SELECT
+            file_id,
+            file_name,
+            mime_type,
+            web_view_link,
+            modified_at,
+            content
+        FROM ranked_chunks
+        WHERE chunk_rank = 1
+        ORDER BY modified_at DESC NULLS LAST, file_name
+        LIMIT $2
+        """,
+        list(root_ids),
+        max(1, min(limit, 50)),
+    )
+    return [
+        StoredDriveChunk(
+            file_id=record["file_id"],
+            file_name=record["file_name"],
+            mime_type=record["mime_type"],
+            web_view_link=record["web_view_link"],
+            modified_at=record["modified_at"],
+            content=record["content"],
+        )
+        for record in records
+    ]

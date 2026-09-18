@@ -28,6 +28,11 @@ from database.messages import (
 )
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
 from google_drive.sync import run_google_drive_sync_forever, sync_google_drive
+from project_updates.scheduler import (
+    get_project_update_channel_id,
+    publish_project_update,
+    run_project_update_scheduler,
+)
 
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
@@ -47,6 +52,7 @@ intents.message_content = True
 class JarrettBot(commands.Bot):
     history_sync_task: asyncio.Task[None] | None = None
     drive_sync_task: asyncio.Task[None] | None = None
+    project_update_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
         await connect_database()
@@ -61,6 +67,11 @@ class JarrettBot(commands.Bot):
             self.drive_sync_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.drive_sync_task
+
+        if self.project_update_task is not None and not self.project_update_task.done():
+            self.project_update_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.project_update_task
 
         await close_database()
         await super().close()
@@ -270,6 +281,19 @@ async def on_ready():
             "are required"
         )
 
+    try:
+        project_update_channel_id = get_project_update_channel_id()
+    except ValueError:
+        logger.exception("Project update scheduling is not configured correctly")
+    else:
+        if project_update_channel_id is not None and (
+            bot.project_update_task is None or bot.project_update_task.done()
+        ):
+            bot.project_update_task = asyncio.create_task(
+                run_project_update_scheduler(bot),
+                name="project-update-scheduler",
+            )
+
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -391,6 +415,33 @@ async def syncdrive(ctx):
         f"{result.files_unchanged} unchanged, "
         f"{result.files_skipped} skipped."
     )
+
+
+@bot.command()
+@commands.is_owner()
+async def projectupdate(ctx):
+    try:
+        channel_id = get_project_update_channel_id()
+    except ValueError:
+        await ctx.send("PROJECT_UPDATE_CHANNEL_ID must be a numeric Discord ID.")
+        return
+
+    if channel_id is None:
+        await ctx.send("PROJECT_UPDATE_CHANNEL_ID is not configured.")
+        return
+
+    await ctx.send("Generating a project intelligence update...")
+    try:
+        result = await publish_project_update(bot, force=True)
+    except Exception:
+        logger.exception("Manual project update failed")
+        await ctx.send("Project update failed. Check the deployment logs.")
+        return
+
+    if result is None:
+        await ctx.send("A project update is already running.")
+    else:
+        await ctx.send(f"Project update posted in <#{result.channel_id}>.")
 
 
 if __name__ == "__main__":

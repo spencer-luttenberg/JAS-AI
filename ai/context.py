@@ -119,6 +119,47 @@ def format_drive_context(
     return "RELEVANT GOOGLE DRIVE FILE EXCERPTS:\n" + "\n".join(selected_lines)
 
 
+def format_project_activity_context(
+    new_messages: Sequence[StoredMessage],
+    follow_up_candidates: Sequence[StoredMessage],
+    *,
+    max_characters: int = 24_000,
+) -> str:
+    new_ids = {message.message_id for message in new_messages}
+    follow_up_candidates = [
+        message
+        for message in follow_up_candidates
+        if message.message_id not in new_ids
+    ]
+
+    new_budget = min(17_000, max_characters * 3 // 4)
+    follow_up_budget = max_characters - new_budget
+    new_lines = _fit_lines(
+        [_serialize_message(message) for message in new_messages],
+        new_budget,
+        keep_end=True,
+    )
+    follow_up_lines = _fit_lines(
+        [_serialize_message(message) for message in follow_up_candidates],
+        follow_up_budget,
+        keep_end=False,
+    )
+
+    sections: list[str] = []
+    if new_lines:
+        sections.append(
+            "NEW DISCORD ACTIVITY SINCE THE PREVIOUS UPDATE:\n"
+            + "\n".join(new_lines)
+        )
+    if follow_up_lines:
+        sections.append(
+            "POSSIBLE LONG-RUNNING FOLLOW-UP CANDIDATES "
+            "(keyword matches; some may already be resolved):\n"
+            + "\n".join(follow_up_lines)
+        )
+    return "\n\n".join(sections)
+
+
 def _serialize_message(message: StoredMessage) -> str:
     attachment_names = [
         attachment.get("filename")

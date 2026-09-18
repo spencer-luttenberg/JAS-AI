@@ -129,6 +129,10 @@ service.
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
 | `LISTEN_CHANNEL_IDS` | Your comma-separated Discord channel IDs |
 | `OPENAI_MODEL` | Optional; defaults to `gpt-5.6-luna` |
+| `PROJECT_UPDATE_CHANNEL_ID` | Optional; channel for scheduled project reports |
+| `PROJECT_UPDATE_INTERVAL_HOURS` | Optional; defaults to `12` |
+| `PROJECT_NAME` | Optional; defaults to `Jarrett AI` |
+| `PROJECT_WEB_SEARCH_TOPICS` | Optional hints for recurring web research |
 
 For `DATABASE_URL`, replace `Postgres` with the exact PostgreSQL service name.
 For example, if the database service is named `JarrettPostgres`, use:
@@ -261,6 +265,7 @@ messages similar to:
 Applying database migration 001_create_discord_messages.sql
 Applying database migration 002_add_long_term_search.sql
 Applying database migration 003_create_google_drive_index.sql
+Applying database migration 004_create_project_update_state.sql
 Logged in as Jarrett AI
 Connected to 1 server(s)
 Recording 2 configured channel(s)
@@ -409,6 +414,18 @@ SELECT COUNT(*) AS searchable_drive_chunks
 FROM google_drive_chunks;
 ```
 
+Check the scheduled project report state:
+
+```sql
+SELECT
+    channel_id,
+    last_started_at,
+    last_completed_at,
+    last_message_id,
+    last_error
+FROM project_update_state;
+```
+
 Exit `psql` with:
 
 ```text
@@ -447,6 +464,9 @@ $env:GOOGLE_DRIVE_FOLDER_IDS="YOUR_GOOGLE_DRIVE_FOLDER_ID"
 $env:GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=[Convert]::ToBase64String(
     [IO.File]::ReadAllBytes("$HOME\Downloads\jas-ai-drive-reader.json")
 )
+$env:PROJECT_UPDATE_CHANNEL_ID="YOUR_UPDATE_CHANNEL_ID"
+$env:PROJECT_UPDATE_INTERVAL_HOURS="12"
+$env:PROJECT_NAME="YOUR_PROJECT_NAME"
 
 python bot.py
 ```
@@ -466,6 +486,61 @@ new terminal requires setting them again.
 Existing channel sync state is preserved. Only the newly added channel needs a
 full import.
 
+## 12. Add Scheduled Project Intelligence Updates
+
+Jarrett AI can post a proactive report to a dedicated Discord channel every 12
+hours. Each report reviews stored Discord activity, possible older follow-ups,
+recent Google Drive material, and current web research. It includes:
+
+- Status, open questions, blockers, and possible follow-ups
+- Prioritized next steps
+- Growth and advertising ideas
+- Current research with source links
+- One wildcard project upgrade
+
+### Create the Update Channel
+
+1. Create a Discord text channel such as `jas-ai-updates`.
+2. Give the bot **View Channel** and **Send Messages** permissions there.
+3. With Discord Developer Mode enabled, right-click the new channel.
+4. Select **Copy Channel ID**.
+5. Open the Railway **JAS-AI** service and its **Variables** tab.
+6. Add `PROJECT_UPDATE_CHANNEL_ID` with the copied numeric ID.
+7. Apply the staged change and redeploy.
+
+The first report runs approximately five minutes after deployment. Later
+reports use the completion time stored in PostgreSQL, so a Railway restart does
+not reset the 12-hour schedule or produce a duplicate report.
+
+To adjust the schedule, set `PROJECT_UPDATE_INTERVAL_HOURS`. The minimum is one
+hour. For example:
+
+```text
+PROJECT_UPDATE_INTERVAL_HOURS=12
+```
+
+These optional variables improve report targeting:
+
+```text
+PROJECT_NAME=Your Project Name
+PROJECT_WEB_SEARCH_TOPICS=local competitors, industry trends, advertising channels
+```
+
+`PROJECT_WEB_SEARCH_TOPICS` is guidance, not a fixed query. The bot also derives
+research topics from current project activity. The OpenAI web-search tool is
+required during every report, so this feature adds two scheduled OpenAI calls
+per day at the default interval plus web-search tool usage.
+
+The Discord application owner can trigger a test immediately from Discord:
+
+```text
+!projectupdate
+```
+
+The result is posted in `PROJECT_UPDATE_CHANNEL_ID`. If you also want discussion
+inside the update channel recorded as long-term memory, add its ID to
+`LISTEN_CHANNEL_IDS`; that is optional for scheduled posting.
+
 ## How Long-Term Memory Works
 
 The bot does not send the entire Discord archive to OpenAI on every question.
@@ -484,6 +559,12 @@ Instead:
    question are sent to OpenAI.
 7. The answer is posted to Discord and stored like other Jarrett AI replies.
 
+Scheduled project reports use a separate PostgreSQL state row to claim each
+run, prevent overlapping reports, and remember the last successful completion.
+They inspect new stored messages plus older keyword-matched follow-up
+candidates. The model is instructed to label uncertain follow-up inferences
+rather than presenting them as confirmed unfinished work.
+
 DMs, messages from other bots, and channels absent from `LISTEN_CHANNEL_IDS`
 are not stored. Message edits update the stored row. Discord deletion events
 remove the stored row.
@@ -501,6 +582,8 @@ questions.
 - `!ask <question>` provides a command-based fallback
 - `!syncdrive` starts an immediate Drive refresh for the Discord application
   owner
+- `!projectupdate` immediately generates a project report for the Discord
+  application owner
 
 ## Troubleshooting
 
@@ -558,6 +641,19 @@ replace `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, and redeploy. Do not add quotes or
 the variable name to its value. Delete the old key in Google Cloud if it may
 have been exposed.
 
+### Scheduled Project Updates Do Not Appear
+
+Check that:
+
+- `PROJECT_UPDATE_CHANNEL_ID` is a numeric channel ID, not the channel name
+- The bot has **View Channel** and **Send Messages** in that channel
+- `PROJECT_UPDATE_INTERVAL_HOURS` is a number of at least `1`
+- The Railway variables were deployed, not merely staged
+- The deployment logs do not show an OpenAI web-search or Discord permission
+  error
+
+Run `!projectupdate` as the Discord application owner to test immediately.
+
 ### Railway Cannot Determine How to Start the Service
 
 Set the bot service's Start Command to:
@@ -588,11 +684,15 @@ python -m pip check
 - Review your retention policy before storing private or sensitive discussion.
 - Keep PostgreSQL private unless public access is temporarily needed for local
   tools.
+- Scheduled reports send selected Discord and Drive excerpts to OpenAI and use
+  live web search. Do not index material that report readers are not allowed to
+  access.
 
 ## Official Documentation
 
 - [Discord privileged intents](https://discord.com/developers/docs/events/gateway#privileged-intents)
 - [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart/)
+- [OpenAI Responses web search](https://developers.openai.com/api/docs/guides/tools-web-search)
 - [Google service-account authentication](https://developers.google.com/identity/protocols/oauth2/service-account)
 - [Google Drive file search](https://developers.google.com/workspace/drive/api/guides/search-files)
 - [Google Drive downloads and exports](https://developers.google.com/workspace/drive/api/guides/manage-downloads)

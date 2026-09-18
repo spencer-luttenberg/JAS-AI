@@ -171,6 +171,76 @@ async def search_messages(
     return [_stored_message(record) for record in records]
 
 
+async def get_guild_messages_since(
+    guild_id: int,
+    since: datetime,
+    *,
+    limit: int = 250,
+) -> list[StoredMessage]:
+    records = await get_pool().fetch(
+        """
+        SELECT message_id, channel_id, author_name, is_bot, content, attachments, created_at
+        FROM (
+            SELECT
+                message_id,
+                channel_id,
+                author_name,
+                is_bot,
+                content,
+                attachments,
+                created_at
+            FROM discord_messages
+            WHERE guild_id = $1
+              AND created_at > $2
+            ORDER BY created_at DESC
+            LIMIT $3
+        ) AS new_messages
+        ORDER BY created_at ASC
+        """,
+        guild_id,
+        since,
+        max(1, min(limit, 1_000)),
+    )
+    return [_stored_message(record) for record in records]
+
+
+async def search_follow_up_candidates(
+    guild_id: int,
+    *,
+    limit: int = 50,
+) -> list[StoredMessage]:
+    records = await get_pool().fetch(
+        """
+        WITH parsed_query AS (
+            SELECT websearch_to_tsquery(
+                'english',
+                'follow OR need OR should OR todo OR question OR issue OR problem '
+                'OR remember OR track OR remind OR action OR pending OR fix'
+            ) AS value
+        )
+        SELECT
+            message_id,
+            channel_id,
+            author_name,
+            is_bot,
+            content,
+            attachments,
+            created_at
+        FROM discord_messages, parsed_query
+        WHERE guild_id = $1
+          AND is_bot = FALSE
+          AND search_vector @@ parsed_query.value
+        ORDER BY
+            ts_rank_cd(search_vector, parsed_query.value) DESC,
+            created_at DESC
+        LIMIT $2
+        """,
+        guild_id,
+        max(1, min(limit, 200)),
+    )
+    return [_stored_message(record) for record in records]
+
+
 async def get_channel_history_sync_state(
     channel_id: int,
 ) -> ChannelHistorySyncState:
