@@ -1,4 +1,5 @@
 asyncpg
+aiohttp
 discord.py
 google-api-python-client
 google-auth

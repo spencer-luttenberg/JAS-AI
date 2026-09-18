@@ -13,9 +13,11 @@ from ai.context import (
     build_history_search_query,
     format_conversation_context,
     format_drive_context,
+    format_jira_context,
 )
 from database.db import close_database, connect_database
 from database.drive_files import search_drive_files
+from database.jira import search_jira_issues
 from database.messages import (
     delete_message,
     delete_messages,
@@ -28,6 +30,15 @@ from database.messages import (
 )
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
 from google_drive.sync import run_google_drive_sync_forever, sync_google_drive
+from jira.actions import propose_jira_action
+from jira.client import (
+    get_jira_project_keys,
+    get_jira_sync_interval,
+    jira_is_configured,
+    validate_issue_key,
+    validate_project_key,
+)
+from jira.sync import run_jira_sync_forever, sync_jira
 from project_updates.scheduler import (
     get_project_update_channel_id,
     publish_project_update,
@@ -52,6 +63,7 @@ intents.message_content = True
 class JarrettBot(commands.Bot):
     history_sync_task: asyncio.Task[None] | None = None
     drive_sync_task: asyncio.Task[None] | None = None
+    jira_sync_task: asyncio.Task[None] | None = None
     project_update_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
@@ -67,6 +79,11 @@ class JarrettBot(commands.Bot):
             self.drive_sync_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.drive_sync_task
+
+        if self.jira_sync_task is not None and not self.jira_sync_task.done():
+            self.jira_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.jira_sync_task
 
         if self.project_update_task is not None and not self.project_update_task.done():
             self.project_update_task.cancel()
@@ -124,6 +141,7 @@ async def answer_question(
         async with message.channel.typing():
             conversation_context = ""
             drive_context = ""
+            jira_context = ""
             if message.guild is not None and is_listened_channel(message.channel):
                 search_query = build_history_search_query(question)
                 try:
@@ -154,10 +172,21 @@ async def answer_question(
                     except Exception:
                         logger.exception("Could not load Google Drive context")
 
+                try:
+                    if jira_is_configured():
+                        jira_issues = await search_jira_issues(
+                            search_query,
+                            project_keys=get_jira_project_keys(),
+                        )
+                        jira_context = format_jira_context(jira_issues)
+                except Exception:
+                    logger.exception("Could not load Jira context")
+
             answer = await ask_openai(
                 question,
                 conversation_context,
                 drive_context,
+                jira_context,
             )
     except OpenAIError:
         logger.exception("OpenAI request failed")
@@ -279,6 +308,35 @@ async def on_ready():
             "Google Drive indexing is disabled because both "
             "GOOGLE_DRIVE_FOLDER_IDS and a Google service-account credential "
             "are required"
+        )
+
+    try:
+        jira_configured = jira_is_configured()
+        if jira_configured:
+            get_jira_sync_interval()
+    except ValueError:
+        jira_configured = False
+        logger.exception("Jira integration configuration is invalid")
+
+    if jira_configured and (
+        bot.jira_sync_task is None or bot.jira_sync_task.done()
+    ):
+        bot.jira_sync_task = asyncio.create_task(
+            run_jira_sync_forever(),
+            name="jira-sync",
+        )
+    elif any(
+        os.getenv(name)
+        for name in (
+            "JIRA_BASE_URL",
+            "JIRA_EMAIL",
+            "JIRA_API_TOKEN",
+            "JIRA_PROJECT_KEYS",
+        )
+    ) and not jira_configured:
+        logger.warning(
+            "Jira indexing is disabled because JIRA_BASE_URL, JIRA_EMAIL, "
+            "JIRA_API_TOKEN, and JIRA_PROJECT_KEYS are all required"
         )
 
     try:
@@ -442,6 +500,247 @@ async def projectupdate(ctx):
         await ctx.send("A project update is already running.")
     else:
         await ctx.send(f"Project update posted in <#{result.channel_id}>.")
+
+
+async def jira_command_is_available(ctx: commands.Context) -> bool:
+    if ctx.guild is None or not is_listened_channel(ctx.channel):
+        await ctx.send(
+            "Jira commands can only be used in a server channel included in "
+            "`LISTEN_CHANNEL_IDS`."
+        )
+        return False
+    try:
+        configured = jira_is_configured()
+    except ValueError as exc:
+        await ctx.send(f"Jira configuration is invalid: {exc}")
+        return False
+    if not configured:
+        await ctx.send("Jira is not configured on this deployment.")
+        return False
+    return True
+
+
+@bot.group(name="jira", invoke_without_command=True)
+async def jira_group(ctx):
+    await ctx.send(
+        "Jira commands: `!jira search`, `create`, `edit`, `comment`, "
+        "`transition`, `assign`, and `sync`. Every write command requires "
+        "confirmation before Jira is changed."
+    )
+
+
+@jira_group.command(name="search")
+async def jira_search(ctx, *, terms: str | None = None):
+    if not await jira_command_is_available(ctx):
+        return
+    if not terms:
+        await ctx.send("Usage: `!jira search search words or ISSUE-123`")
+        return
+
+    search_query = build_history_search_query(terms)
+    issues = await search_jira_issues(
+        search_query,
+        project_keys=get_jira_project_keys(),
+        limit=10,
+    )
+    if not issues:
+        await ctx.send("No indexed Jira issues matched that search.")
+        return
+
+    lines = []
+    for issue in issues:
+        summary = discord.utils.escape_markdown(issue.summary)[:180]
+        status = discord.utils.escape_markdown(issue.status)
+        assignee = discord.utils.escape_markdown(issue.assignee or "Unassigned")
+        lines.append(
+            f"[{issue.issue_key}]({issue.web_url}) - {summary} "
+            f"({status}; {assignee})"
+        )
+    await ctx.send(
+        "\n".join(lines),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@jira_group.command(name="create")
+async def jira_create(ctx, *, details: str | None = None):
+    if not await jira_command_is_available(ctx):
+        return
+    parts = _jira_command_parts(details, 4)
+    if parts is None:
+        await ctx.send(
+            "Usage: `!jira create PROJECT | ISSUE TYPE | SUMMARY | DESCRIPTION`"
+        )
+        return
+    project_key, issue_type, summary, description = parts
+    try:
+        project_key = validate_project_key(project_key)
+    except ValueError as exc:
+        await ctx.send(str(exc))
+        return
+    if project_key not in get_jira_project_keys():
+        await ctx.send("That project is not included in `JIRA_PROJECT_KEYS`.")
+        return
+    if not issue_type or not summary:
+        await ctx.send("Issue type and summary cannot be empty.")
+        return
+    await propose_jira_action(
+        ctx,
+        "create",
+        {
+            "project_key": project_key,
+            "issue_type": issue_type,
+            "summary": summary,
+            "description": description,
+        },
+    )
+
+
+@jira_group.command(name="edit")
+async def jira_edit(ctx, *, details: str | None = None):
+    if not await jira_command_is_available(ctx):
+        return
+    parts = _jira_command_parts(details, 3)
+    if parts is None:
+        await ctx.send(
+            "Usage: `!jira edit ISSUE-123 | summary/description/priority/labels | VALUE`"
+        )
+        return
+    issue_key, field, value = parts
+    try:
+        issue_key = validate_issue_key(issue_key)
+    except ValueError as exc:
+        await ctx.send(str(exc))
+        return
+    if not _jira_issue_is_configured(issue_key):
+        await ctx.send("That issue is outside the projects in `JIRA_PROJECT_KEYS`.")
+        return
+    field = field.casefold()
+    if field not in {"summary", "description", "priority", "labels"}:
+        await ctx.send("Editable fields are summary, description, priority, and labels.")
+        return
+    await propose_jira_action(
+        ctx,
+        "edit",
+        {"issue_key": issue_key, "field": field, "value": value},
+    )
+
+
+@jira_group.command(name="comment")
+async def jira_comment(ctx, *, details: str | None = None):
+    if not await jira_command_is_available(ctx):
+        return
+    parts = _jira_command_parts(details, 2)
+    if parts is None:
+        await ctx.send("Usage: `!jira comment ISSUE-123 | COMMENT TEXT`")
+        return
+    issue_key, comment = parts
+    try:
+        issue_key = validate_issue_key(issue_key)
+    except ValueError as exc:
+        await ctx.send(str(exc))
+        return
+    if not _jira_issue_is_configured(issue_key):
+        await ctx.send("That issue is outside the projects in `JIRA_PROJECT_KEYS`.")
+        return
+    if not comment:
+        await ctx.send("The comment cannot be empty.")
+        return
+    await propose_jira_action(
+        ctx,
+        "comment",
+        {"issue_key": issue_key, "comment": comment},
+    )
+
+
+@jira_group.command(name="transition")
+async def jira_transition(ctx, *, details: str | None = None):
+    if not await jira_command_is_available(ctx):
+        return
+    parts = _jira_command_parts(details, 2)
+    if parts is None:
+        await ctx.send("Usage: `!jira transition ISSUE-123 | STATUS NAME`")
+        return
+    issue_key, status = parts
+    try:
+        issue_key = validate_issue_key(issue_key)
+    except ValueError as exc:
+        await ctx.send(str(exc))
+        return
+    if not _jira_issue_is_configured(issue_key):
+        await ctx.send("That issue is outside the projects in `JIRA_PROJECT_KEYS`.")
+        return
+    if not status:
+        await ctx.send("The status cannot be empty.")
+        return
+    await propose_jira_action(
+        ctx,
+        "transition",
+        {"issue_key": issue_key, "status": status},
+    )
+
+
+@jira_group.command(name="assign")
+async def jira_assign(ctx, *, details: str | None = None):
+    if not await jira_command_is_available(ctx):
+        return
+    parts = _jira_command_parts(details, 2)
+    if parts is None:
+        await ctx.send(
+            "Usage: `!jira assign ISSUE-123 | PERSON NAME OR EMAIL` or `| unassigned`"
+        )
+        return
+    issue_key, account_id = parts
+    try:
+        issue_key = validate_issue_key(issue_key)
+    except ValueError as exc:
+        await ctx.send(str(exc))
+        return
+    if not _jira_issue_is_configured(issue_key):
+        await ctx.send("That issue is outside the projects in `JIRA_PROJECT_KEYS`.")
+        return
+    if not account_id:
+        await ctx.send("The assignee cannot be empty; use `unassigned` to clear it.")
+        return
+    normalized_assignee = (
+        None if account_id.casefold() in {"none", "unassigned"} else account_id
+    )
+    await propose_jira_action(
+        ctx,
+        "assign",
+        {"issue_key": issue_key, "assignee": normalized_assignee},
+    )
+
+
+@jira_group.command(name="sync")
+@commands.is_owner()
+async def jira_sync(ctx):
+    if not await jira_command_is_available(ctx):
+        return
+    await ctx.send("Starting Jira sync...")
+    try:
+        result = await sync_jira()
+    except Exception:
+        logger.exception("Manual Jira sync failed")
+        await ctx.send("Jira sync failed. Check the deployment logs.")
+        return
+    await ctx.send(
+        f"Jira sync complete: {result.issues_synced} issue(s) across "
+        f"{result.projects_synced} project(s)."
+    )
+
+
+def _jira_command_parts(value: str | None, count: int) -> list[str] | None:
+    if value is None:
+        return None
+    parts = [part.strip() for part in value.split("|", count - 1)]
+    if len(parts) != count or any(not part for part in parts[:-1]):
+        return None
+    return parts
+
+
+def _jira_issue_is_configured(issue_key: str) -> bool:
+    return issue_key.rsplit("-", 1)[0] in get_jira_project_keys()
 
 
 if __name__ == "__main__":

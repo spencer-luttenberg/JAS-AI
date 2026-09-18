@@ -3,6 +3,7 @@ import re
 from collections.abc import Sequence
 
 from database.drive_files import StoredDriveChunk
+from database.jira import StoredJiraIssue
 from database.messages import StoredMessage
 
 
@@ -117,6 +118,37 @@ def format_drive_context(
     if not selected_lines:
         return ""
     return "RELEVANT GOOGLE DRIVE FILE EXCERPTS:\n" + "\n".join(selected_lines)
+
+
+def format_jira_context(
+    issues: Sequence[StoredJiraIssue],
+    *,
+    max_characters: int = 12_000,
+) -> str:
+    lines = [
+        json.dumps(
+            {
+                "issue_key": issue.issue_key,
+                "project_key": issue.project_key,
+                "summary": issue.summary,
+                "description": issue.description[:3_000],
+                "issue_type": issue.issue_type,
+                "status": issue.status,
+                "priority": issue.priority,
+                "assignee": issue.assignee,
+                "labels": issue.labels,
+                "recent_comments_and_changes": issue.activity_text[-6_000:],
+                "updated_at": issue.updated_at.isoformat(),
+                "source_url": issue.web_url,
+            },
+            ensure_ascii=True,
+        )
+        for issue in issues
+    ]
+    selected_lines = _fit_lines(lines, max_characters, keep_end=False)
+    if not selected_lines:
+        return ""
+    return "RELEVANT JIRA ISSUES, COMMENTS, AND CHANGES:\n" + "\n".join(selected_lines)
 
 
 def format_project_activity_context(

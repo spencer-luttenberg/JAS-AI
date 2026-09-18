@@ -3,11 +3,12 @@
 Jarrett AI is a Discord bot with OpenAI-powered answers and PostgreSQL-backed
 long-term memory. It records every human message and its own replies in the
 Discord channels you approve, imports accessible older history, indexes files
-from Google Drive, and searches those sources when someone mentions `@JAS AI`
-with a question.
+from Google Drive, synchronizes Jira Cloud issues and activity, and searches
+those sources when someone mentions `@JAS AI` with a question. Jira writes are
+never automatic: a user must confirm each proposed change in Discord.
 
 This tutorial covers the complete setup for Discord, OpenAI, Railway,
-PostgreSQL, and Google Drive.
+PostgreSQL, Google Drive, and Jira Cloud.
 
 ## Before You Start
 
@@ -18,6 +19,7 @@ You need:
 - A regenerated Discord bot token that has never been shared publicly
 - An OpenAI API key
 - A Google account and Google Cloud project for Drive access
+- A Jira Cloud site and Atlassian account for Jira integration
 - A Railway project containing the Python bot service
 - This repository connected to the Railway bot service
 - Python 3.13 if you also want to run the bot locally
@@ -111,6 +113,7 @@ the SQL files in `database/migrations/` and creates:
 - `discord_messages`
 - `discord_channel_sync_state`
 - `google_drive_files`, `google_drive_chunks`, and Drive sync tracking tables
+- `jira_issues`, `jira_comments`, `jira_changes`, and Jira sync/approval tables
 - The indexes used for chronological and full-text history searches
 
 ## 4. Connect the Bot Service to PostgreSQL
@@ -133,6 +136,11 @@ service.
 | `PROJECT_UPDATE_INTERVAL_HOURS` | Optional; defaults to `12` |
 | `PROJECT_NAME` | Optional; defaults to `Jarrett AI` |
 | `PROJECT_WEB_SEARCH_TOPICS` | Optional hints for recurring web research |
+| `JIRA_BASE_URL` | Optional; site such as `https://example.atlassian.net` |
+| `JIRA_EMAIL` | Optional; email for the Atlassian account that owns the token |
+| `JIRA_API_TOKEN` | Optional; Atlassian API token, never an account password |
+| `JIRA_PROJECT_KEYS` | Optional; comma-separated project keys such as `JAS,OPS` |
+| `JIRA_SYNC_INTERVAL_SECONDS` | Optional; defaults to `600`, minimum `300` |
 
 For `DATABASE_URL`, replace `Postgres` with the exact PostgreSQL service name.
 For example, if the database service is named `JarrettPostgres`, use:
@@ -237,7 +245,70 @@ Images, audio, video, Google Forms, shortcuts, legacy Office formats, and
 other unsupported binaries are skipped. Image-only or scanned PDFs need OCR
 before their text becomes searchable.
 
-## 6. Configure and Deploy the Bot Service
+## 6. Configure Jira Cloud
+
+Jira is optional. If its four required variables are absent, the Discord,
+Drive, and project-update features continue to work. This integration supports
+**Jira Cloud**, not Jira Server or Jira Data Center.
+
+### Create a Dedicated Jira Account and Permissions
+
+A dedicated Atlassian account is recommended because API-token access has the
+same Jira permissions as the account that created it.
+
+1. Create or choose an Atlassian account for Jarrett AI and give it Jira product
+   access.
+2. Add that account to each project Jarrett AI should read or manage.
+3. Grant **Browse Projects** so it can synchronize issues, comments, and change
+   history.
+4. For management, also grant **Create Issues**, **Edit Issues**, **Assign
+   Issues**, **Assignable User**, **Transition Issues**, and **Add Comments**.
+5. Grant the Jira global **Browse users and groups** permission if `!jira assign`
+   should resolve display names or email addresses.
+6. Do not grant project administration or issue deletion just for this bot. It
+   has no delete command.
+
+For a company-managed project, permissions normally come from its permission
+scheme and project roles. For a team-managed project, use **Project settings >
+Access**. Jira's labels vary by plan, so ask a Jira site administrator to map
+the permissions above if you cannot see those controls.
+
+### Create the API Token
+
+This bot uses the ordinary API-token basic-auth flow intended for private
+scripts and bots. It does not use your Atlassian password.
+
+1. Sign in as the dedicated account at the [Atlassian API token page](https://id.atlassian.com/manage-profile/security/api-tokens).
+2. Select **Create API token**. Do not select **Create API token with scopes**;
+   scoped tokens use a different API gateway URL that this configuration does
+   not use.
+3. Name it `jas-ai-railway`.
+4. Choose an expiration date and record it so the token can be rotated before
+   it expires.
+5. Create the token, copy it once, and store it in a password manager.
+
+### Add the Railway Variables
+
+Open the **JAS-AI bot service**, select **Variables**, and add:
+
+```text
+JIRA_BASE_URL=https://your-site.atlassian.net
+JIRA_EMAIL=jas-ai-account@example.com
+JIRA_API_TOKEN=YOUR_ATLASSIAN_API_TOKEN
+JIRA_PROJECT_KEYS=JAS,OPS
+JIRA_SYNC_INTERVAL_SECONDS=600
+```
+
+Use the project keys shown at the start of issue IDs, not project display names.
+For example, `JAS-42` belongs to project key `JAS`. Do not add `/jira`, `/browse`,
+or `/rest` to `JIRA_BASE_URL`, and do not quote the values.
+
+`JIRA_PROJECT_KEYS` is also a write boundary: the bot refuses to create or
+modify an issue outside those projects, even if the Jira account has broader
+access. Apply the Railway variable changes and redeploy after completing the
+next section.
+
+## 7. Configure and Deploy the Bot Service
 
 Railway normally detects the Python start command automatically. To set it
 explicitly:
@@ -256,7 +327,7 @@ explicitly:
 Railway installs `requirements.txt`, starts `bot.py`, connects to PostgreSQL,
 and applies all database migrations automatically.
 
-## 7. Watch the First Deployment
+## 8. Watch the First Deployment
 
 Open the bot service's deployment logs. A successful startup should include
 messages similar to:
@@ -266,6 +337,7 @@ Applying database migration 001_create_discord_messages.sql
 Applying database migration 002_add_long_term_search.sql
 Applying database migration 003_create_google_drive_index.sql
 Applying database migration 004_create_project_update_state.sql
+Applying database migration 005_create_jira_integration.sql
 Logged in as Jarrett AI
 Connected to 1 server(s)
 Recording 2 configured channel(s)
@@ -273,6 +345,7 @@ Starting full backfill for Discord channel 123456789012345678
 Finished full backfill for channel 123456789012345678; stored 850 message(s)
 Starting Google Drive sync for folder 1AbCdEfGhIjKlMnOp
 Google Drive sync complete: 1 root(s), 42 file(s) seen, 40 indexed, 0 unchanged, 2 skipped
+Jira sync completed for JAS: 28 issue(s)
 ```
 
 The first deployment imports all accessible history for every ID in
@@ -295,7 +368,7 @@ The Google Drive sync runs in the background at startup and then at the
 configured interval. A skipped-file warning includes the file name and reason;
 it does not stop the rest of the sync.
 
-## 8. Test the Bot in Discord
+## 9. Test the Bot in Discord
 
 In an approved channel, send:
 
@@ -341,7 +414,24 @@ when nobody uses a bot command. Ordinary message ingestion does not call
 OpenAI. OpenAI is called only when the bot is mentioned with a question or
 someone uses `!ask`.
 
-## 9. Verify the PostgreSQL Data
+Test the read-only Jira index:
+
+```text
+!jira search camera repair
+```
+
+Test the write approval boundary with a real, low-risk issue. This first posts
+a preview and does not send a write request to Jira:
+
+```text
+!jira comment JAS-42 | Testing Jarrett AI's approval flow.
+```
+
+Click **Cancel** to verify that nothing changes. Run it again and click
+**Confirm** to apply it. Only the Discord user who issued the command can use
+that request's buttons, and an unconfirmed request expires after 15 minutes.
+
+## 10. Verify the PostgreSQL Data
 
 The most reliable command-line method is Railway CLI plus PostgreSQL's `psql`
 client.
@@ -426,13 +516,33 @@ SELECT
 FROM project_update_state;
 ```
 
+Check synchronized Jira issues and their last update:
+
+```sql
+SELECT issue_key, summary, status, assignee, updated_at, synced_at
+FROM jira_issues
+ORDER BY updated_at DESC
+LIMIT 20;
+```
+
+Check Jira project sync state and the write-approval audit trail:
+
+```sql
+SELECT project_key, last_synced_at FROM jira_sync_state ORDER BY project_key;
+
+SELECT action_type, status, created_at, completed_at, result_text, error
+FROM jira_pending_actions
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
 Exit `psql` with:
 
 ```text
 \q
 ```
 
-## 10. Run Locally (Optional)
+## 11. Run Locally (Optional)
 
 Railway deployment is the normal always-on setup. Local testing requires a
 database URL reachable from your computer.
@@ -467,6 +577,10 @@ $env:GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=[Convert]::ToBase64String(
 $env:PROJECT_UPDATE_CHANNEL_ID="YOUR_UPDATE_CHANNEL_ID"
 $env:PROJECT_UPDATE_INTERVAL_HOURS="12"
 $env:PROJECT_NAME="YOUR_PROJECT_NAME"
+$env:JIRA_BASE_URL="https://your-site.atlassian.net"
+$env:JIRA_EMAIL="jas-ai-account@example.com"
+$env:JIRA_API_TOKEN="YOUR_ATLASSIAN_API_TOKEN"
+$env:JIRA_PROJECT_KEYS="JAS,OPS"
 
 python bot.py
 ```
@@ -474,7 +588,7 @@ python bot.py
 PowerShell `$env:` values apply only to the current terminal session. Opening a
 new terminal requires setting them again.
 
-## 11. Add Another Channel Later
+## 12. Add Another Channel Later
 
 1. Give the bot **View Channel**, **Read Message History**, and **Send
    Messages** permissions in the new channel.
@@ -486,11 +600,12 @@ new terminal requires setting them again.
 Existing channel sync state is preserved. Only the newly added channel needs a
 full import.
 
-## 12. Add Scheduled Project Intelligence Updates
+## 13. Add Scheduled Project Intelligence Updates
 
 Jarrett AI can post a proactive report to a dedicated Discord channel every 12
 hours. Each report reviews stored Discord activity, possible older follow-ups,
-recent Google Drive material, and current web research. It includes:
+recent Google Drive material, recent Jira activity, and current web research.
+It includes:
 
 - Status, open questions, blockers, and possible follow-ups
 - Prioritized next steps
@@ -555,9 +670,17 @@ Instead:
    history for relevant messages.
 4. The bot also loads the 15 most recent messages from the current channel.
 5. PostgreSQL searches indexed Google Drive chunks for the same topic.
-6. Relevant old messages, recent conversation, Drive excerpts, and the current
-   question are sent to OpenAI.
-7. The answer is posted to Discord and stored like other Jarrett AI replies.
+6. PostgreSQL searches synchronized Jira summaries, descriptions, comments,
+   and change history for the same topic.
+7. Relevant old messages, recent conversation, Drive excerpts, Jira activity,
+   and the current question are sent to OpenAI.
+8. The answer is posted to Discord and stored like other Jarrett AI replies.
+
+Jira sync runs once when the bot starts and every 10 minutes by default. The
+first run imports every issue visible to the Jira account in the configured
+projects, including comments and change history. Later runs use Jira's update
+timestamp with a five-minute overlap so edits are not missed. This is polling,
+so an update can take up to the configured interval to appear in answers.
 
 Scheduled project reports use a separate PostgreSQL state row to claim each
 run, prevent overlapping reports, and remember the last successful completion.
@@ -584,6 +707,20 @@ questions.
   owner
 - `!projectupdate` immediately generates a project report for the Discord
   application owner
+- `!jira search <words or ISSUE-123>` searches the local Jira index; read-only
+- `!jira create PROJECT | TYPE | SUMMARY | DESCRIPTION` proposes a new issue
+- `!jira edit ISSUE-123 | FIELD | VALUE` proposes editing `summary`,
+  `description`, `priority`, or comma-separated `labels`
+- `!jira comment ISSUE-123 | TEXT` proposes a comment
+- `!jira transition ISSUE-123 | STATUS` proposes a workflow transition
+- `!jira assign ISSUE-123 | NAME OR EMAIL` proposes assignment; use
+  `unassigned` to clear it
+- `!jira sync` immediately refreshes Jira for the Discord application owner
+
+Every Jira create, edit, comment, transition, or assignment command creates a
+Discord preview with **Confirm** and **Cancel** buttons. No Jira write is made
+until the requesting user clicks **Confirm**. Natural-language questions and
+scheduled reports can read Jira context but cannot bypass this approval path.
 
 ## Troubleshooting
 
@@ -654,6 +791,32 @@ Check that:
 
 Run `!projectupdate` as the Discord application owner to test immediately.
 
+### Jira Sync Returns `401 Unauthorized`
+
+Confirm `JIRA_EMAIL` is the email of the account that created the token,
+`JIRA_API_TOKEN` is an ordinary API token rather than a password or scoped API
+token, and `JIRA_BASE_URL` is the site's `https://name.atlassian.net` URL. Check
+the token's expiration date, replace it if expired, then redeploy.
+
+### Jira Sync Returns `403 Forbidden`
+
+The authenticated Jira account lacks access. Grant **Browse Projects** in every
+configured project. For write failures, grant the specific permission named by
+the command, such as **Add Comments** or **Transition Issues**. Jira API access
+never exceeds that account's normal Jira permissions.
+
+### Jira Search Finds Nothing
+
+Run `!jira sync` as the Discord application owner and inspect the deployment
+logs. Confirm `JIRA_PROJECT_KEYS` uses issue-key prefixes, the account can browse
+those projects, and migration `005_create_jira_integration.sql` was applied.
+
+### A Jira Approval Button Says It Expired
+
+Approval requests last 15 minutes and in-memory Discord buttons do not survive
+a bot restart. Run the command again and review the new preview. An expired,
+cancelled, or restart-orphaned request never makes a Jira write.
+
 ### Railway Cannot Determine How to Start the Service
 
 Set the bot service's Start Command to:
@@ -675,8 +838,8 @@ python -m pip check
 
 ## Security and Privacy
 
-- Never commit or share `DISCORD_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`, or
-  `DATABASE_PUBLIC_URL`.
+- Never commit or share `DISCORD_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`,
+  `DATABASE_PUBLIC_URL`, `JIRA_API_TOKEN`, or service-account credentials.
 - Treat the Google service-account JSON as a password. Never commit it, post
   it in Discord, or include it in screenshots.
 - Reset any secret immediately if it is exposed.
@@ -684,9 +847,11 @@ python -m pip check
 - Review your retention policy before storing private or sensitive discussion.
 - Keep PostgreSQL private unless public access is temporarily needed for local
   tools.
-- Scheduled reports send selected Discord and Drive excerpts to OpenAI and use
-  live web search. Do not index material that report readers are not allowed to
-  access.
+- Scheduled reports and answers may send selected Discord, Drive, and Jira
+  excerpts to OpenAI. Reports also use live web search. Do not index material
+  that report readers are not allowed to access.
+- Use a dedicated Jira account, limit it to the configured projects, rotate its
+  API token before expiration, and revoke the token immediately if exposed.
 
 ## Official Documentation
 
@@ -696,6 +861,11 @@ python -m pip check
 - [Google service-account authentication](https://developers.google.com/identity/protocols/oauth2/service-account)
 - [Google Drive file search](https://developers.google.com/workspace/drive/api/guides/search-files)
 - [Google Drive downloads and exports](https://developers.google.com/workspace/drive/api/guides/manage-downloads)
+- [Jira Cloud REST API v3](https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/)
+- [Jira API-token basic authentication](https://developer.atlassian.com/cloud/jira/service-desk/basic-auth-for-rest-apis/)
+- [Atlassian API-token management](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)
+- [Jira issue API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)
+- [Jira user search API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-user-search/)
 - [Railway PostgreSQL](https://docs.railway.com/databases/postgresql)
 - [Railway reference variables](https://docs.railway.com/variables#referencing-another-services-variable)
 - [Railway start commands](https://docs.railway.com/deployments/start-command)

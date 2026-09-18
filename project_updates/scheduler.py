@@ -7,8 +7,13 @@ import os
 import discord
 
 from ai.client import generate_project_update
-from ai.context import format_drive_context, format_project_activity_context
+from ai.context import (
+    format_drive_context,
+    format_jira_context,
+    format_project_activity_context,
+)
 from database.drive_files import get_recent_drive_chunks
+from database.jira import get_recent_jira_issues
 from database.messages import (
     get_guild_messages_since,
     search_follow_up_candidates,
@@ -19,6 +24,7 @@ from database.project_updates import (
     fail_project_update,
 )
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
+from jira.client import get_jira_project_keys, jira_is_configured
 
 
 logger = logging.getLogger(__name__)
@@ -120,11 +126,22 @@ async def publish_project_update(
             )
             drive_context = format_drive_context(drive_chunks)
 
+        jira_context = ""
+        if jira_is_configured():
+            jira_issues = await get_recent_jira_issues(
+                get_jira_project_keys(),
+            )
+            jira_context = format_jira_context(
+                jira_issues,
+                max_characters=18_000,
+            )
+
         update = await generate_project_update(
             project_name=os.getenv("PROJECT_NAME", "Jarrett AI"),
             since=since,
             activity_context=activity_context,
             drive_context=drive_context,
+            jira_context=jira_context,
             web_search_topics=os.getenv("PROJECT_WEB_SEARCH_TOPICS", ""),
         )
 
