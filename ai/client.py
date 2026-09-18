@@ -81,6 +81,10 @@ async def ask_openai(
             "and Cancel buttons, and Jira remains unchanged until Confirm is "
             "clicked. Do not tell the user to type an approval phrase. Do not "
             "call a function for hypothetical ideas or drafting-only requests. "
+            "Use propose_jira_plan when a request changes sprint assignment, "
+            "story points, or combines planning fields such as sprint, points, "
+            "and priority. Put all requested planning changes in that one "
+            "proposal. "
             "For issue creation, never ask for priority or assignee because they "
             "are not required. If exactly one Jira project is available, use it "
             "when the user omits the project. If the user omits the issue type, "
@@ -99,6 +103,8 @@ async def ask_openai(
         tool_choice: str | dict[str, str] = "auto"
         if len(jira_project_keys) == 1 and _is_explicit_jira_create_request(question):
             tool_choice = {"type": "function", "name": "propose_jira_create"}
+        elif _is_explicit_jira_plan_request(question):
+            tool_choice = {"type": "function", "name": "propose_jira_plan"}
         request_options.update(
             {
                 "tools": tools,
@@ -155,6 +161,32 @@ def _jira_proposal_tools(project_keys: tuple[str, ...]) -> list[dict[str, Any]]:
                 "description": {
                     "type": "string",
                     "description": "Full description including acceptance criteria.",
+                },
+            },
+        ),
+        _function_tool(
+            "propose_jira_plan",
+            "Prepare one combined Jira planning change for Discord confirmation. "
+            "Use for moving an existing issue into the current sprint, setting "
+            "story points, changing priority as part of planning, or any "
+            "combination of those changes. Resolve references such as 'that "
+            "ticket' from the recent conversation.",
+            {
+                "issue_key": issue_key,
+                "move_to_current_sprint": {
+                    "type": "boolean",
+                    "description": (
+                        "True only when the user asked to move the issue into "
+                        "the board's currently active sprint."
+                    ),
+                },
+                "story_points": {
+                    "type": ["number", "null"],
+                    "description": "Requested estimate, or null for no change.",
+                },
+                "priority": {
+                    "type": ["string", "null"],
+                    "description": "Requested Jira priority, or null for no change.",
                 },
             },
         ),
@@ -228,6 +260,24 @@ def _is_explicit_jira_create_request(question: str) -> bool:
     )
 
 
+def _is_explicit_jira_plan_request(question: str) -> bool:
+    normalized = " ".join(question.casefold().split())
+    if re.search(r"\b(?:how|why|what)\b.*\b(?:sprint|points?|priority)\b", normalized):
+        return False
+    if re.search(r"\b(?:do not|don't|never)\b.*\b(?:move|set|assign|give)\b", normalized):
+        return False
+
+    has_action = re.search(
+        r"\b(?:move|pull|put|add|assign|set|give|estimate)\b",
+        normalized,
+    )
+    has_planning_field = re.search(
+        r"\b(?:sprint|story\s+points?|points?)\b",
+        normalized,
+    )
+    return bool(has_action and has_planning_field)
+
+
 def _function_tool(
     name: str,
     description: str,
@@ -254,6 +304,7 @@ def _extract_jira_action(response: Any) -> JiraActionProposal | None:
         "propose_jira_comment": "comment",
         "propose_jira_transition": "transition",
         "propose_jira_assign": "assign",
+        "propose_jira_plan": "plan",
     }
     for item in getattr(response, "output", ()):
         if getattr(item, "type", None) != "function_call":

@@ -140,6 +140,7 @@ service.
 | `JIRA_EMAIL` | Optional; email for the Atlassian account that owns the token |
 | `JIRA_API_TOKEN` | Optional; Atlassian API token, never an account password |
 | `JIRA_PROJECT_KEYS` | Optional; comma-separated project keys such as `JAS,OPS` |
+| `JIRA_BOARD_ID` | Required for sprint/story-point changes; numeric board ID |
 | `JIRA_DEFAULT_ISSUE_TYPE` | Optional; defaults to `Story` for natural-language creates |
 | `JIRA_SYNC_INTERVAL_SECONDS` | Optional; defaults to `600`, minimum `300` |
 
@@ -262,8 +263,10 @@ same Jira permissions as the account that created it.
 2. Add that account to each project Jarrett AI should read or manage.
 3. Grant **Browse Projects** so it can synchronize issues, comments, and change
    history.
-4. For management, also grant **Create Issues**, **Edit Issues**, **Assign
-   Issues**, **Assignable User**, **Transition Issues**, and **Add Comments**.
+4. For management, also grant **Create Issues**, **Edit Issues**, **Schedule
+   Issues**, **Assign Issues**, **Assignable User**, **Transition Issues**, and
+   **Add Comments**. **Schedule Issues** is required to add or remove issues
+   from a sprint.
 5. Grant the Jira global **Browse users and groups** permission if `!jira assign`
    should resolve display names or email addresses.
 6. Do not grant project administration or issue deletion just for this bot. It
@@ -297,6 +300,7 @@ JIRA_BASE_URL=https://your-site.atlassian.net
 JIRA_EMAIL=jas-ai-account@example.com
 JIRA_API_TOKEN=YOUR_ATLASSIAN_API_TOKEN
 JIRA_PROJECT_KEYS=JAS,OPS
+JIRA_BOARD_ID=1
 JIRA_DEFAULT_ISSUE_TYPE=Story
 JIRA_SYNC_INTERVAL_SECONDS=600
 ```
@@ -304,6 +308,16 @@ JIRA_SYNC_INTERVAL_SECONDS=600
 Use the project keys shown at the start of issue IDs, not project display names.
 For example, `JAS-42` belongs to project key `JAS`. Do not add `/jira`, `/browse`,
 or `/rest` to `JIRA_BASE_URL`, and do not quote the values.
+
+`JIRA_BOARD_ID` is the number after `/boards/` in the Jira board URL. For
+`.../projects/SCRUM/boards/1`, set it to `1`. The bot resolves the active sprint
+from this board when you request the "current sprint" and uses the board's
+configured estimation field when setting story points.
+
+In Jira, open the board's settings and confirm its estimation method is **Story
+points**. Also ensure the account in `JIRA_EMAIL` can view this board. If the
+board's filter is private, share it with that account or a group/role containing
+that account.
 
 `JIRA_PROJECT_KEYS` is also a write boundary: the bot refuses to create or
 modify an issue outside those projects, even if the Jira account has broader
@@ -602,6 +616,7 @@ $env:JIRA_BASE_URL="https://your-site.atlassian.net"
 $env:JIRA_EMAIL="jas-ai-account@example.com"
 $env:JIRA_API_TOKEN="YOUR_ATLASSIAN_API_TOKEN"
 $env:JIRA_PROJECT_KEYS="JAS,OPS"
+$env:JIRA_BOARD_ID="1"
 $env:JIRA_DEFAULT_ISSUE_TYPE="Story"
 
 python bot.py
@@ -737,13 +752,16 @@ questions.
 - `!jira transition ISSUE-123 | STATUS` proposes a workflow transition
 - `!jira assign ISSUE-123 | NAME OR EMAIL` proposes assignment; use
   `unassigned` to clear it
+- `!jira plan ISSUE-123 | current/- | POINTS/- | PRIORITY/-` proposes sprint,
+  estimation, and priority changes in one approval
 - `!jira sync` immediately refreshes Jira for the Discord application owner
 
-Every Jira create, edit, comment, transition, or assignment request creates a
-Discord preview with **Confirm** and **Cancel** buttons, whether it came from a
-`!jira` command or an explicit natural-language request to `@JAS AI`. No Jira
-write is made until the requesting user clicks **Confirm**. Scheduled reports
-and ordinary questions can read Jira context but cannot bypass this path.
+Every Jira create, edit, comment, transition, assignment, or planning request
+creates a Discord preview with **Confirm** and **Cancel** buttons, whether it
+came from a `!jira` command or an explicit natural-language request to
+`@JAS AI`. No Jira write is made until the requesting user clicks **Confirm**.
+Scheduled reports and ordinary questions can read Jira context but cannot
+bypass this path.
 
 ## Troubleshooting
 
@@ -906,6 +924,10 @@ python -m pip check
 - [Atlassian API-token management](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)
 - [Jira issue API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)
 - [Jira user search API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-user-search/)
+- [Jira sprint API](https://developer.atlassian.com/cloud/jira/software/rest/api-group-sprint/)
+- [Jira board API](https://developer.atlassian.com/cloud/jira/software/rest/api-group-board/)
+- [Jira estimation API](https://developer.atlassian.com/cloud/jira/software/rest/api-group-issue/)
+- [Jira work item permissions](https://support.atlassian.com/jira-cloud-administration/docs/work-item-permissions/)
 - [Railway PostgreSQL](https://docs.railway.com/databases/postgresql)
 - [Railway reference variables](https://docs.railway.com/variables#referencing-another-services-variable)
 - [Railway start commands](https://docs.railway.com/deployments/start-command)

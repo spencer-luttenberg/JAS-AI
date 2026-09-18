@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import logging
+import math
 from typing import Any
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from database.jira import (
 from jira.client import (
     JiraAPIError,
     JiraClient,
+    get_jira_board_id,
     get_jira_default_issue_type,
     get_jira_project_keys,
     validate_issue_key,
@@ -274,6 +276,30 @@ async def execute_jira_action(action: PendingJiraAction) -> JiraActionResult:
                 str(assignee) if assignee is not None else None,
             )
             message = "was assigned." if assignee is not None else "was unassigned."
+        elif action.action_type == "plan":
+            issue_key = str(payload["issue_key"])
+            board_id = None
+            sprint = None
+            story_points = payload.get("story_points")
+            if payload["move_to_current_sprint"] or story_points is not None:
+                board_id = get_jira_board_id()
+
+            if payload["move_to_current_sprint"]:
+                sprint = await client.get_active_sprint(board_id)
+            if story_points is not None:
+                await client.get_issue_estimation(issue_key, board_id)
+
+            changes = []
+            if sprint is not None:
+                await client.move_issue_to_sprint(issue_key, int(sprint["id"]))
+                changes.append(f"moved to active sprint {sprint['name']}")
+            if story_points is not None:
+                await client.estimate_issue(issue_key, board_id, story_points)
+                changes.append(f"estimated at {story_points} point(s)")
+            if payload.get("priority") is not None:
+                await client.edit_issue(issue_key, "priority", str(payload["priority"]))
+                changes.append(f"priority set to {payload['priority']}")
+            message = "; ".join(changes) + "."
         else:
             raise ValueError(f"Unsupported Jira action: {action.action_type}")
 
@@ -295,6 +321,7 @@ def describe_action(action: PendingJiraAction) -> str:
         "comment": "Add Jira comment",
         "transition": "Transition Jira issue",
         "assign": "Assign Jira issue",
+        "plan": "Plan Jira issue",
     }
     field_order = {
         "create": ("project_key", "issue_type", "summary", "description"),
@@ -302,12 +329,22 @@ def describe_action(action: PendingJiraAction) -> str:
         "comment": ("issue_key", "comment"),
         "transition": ("issue_key", "status"),
         "assign": ("issue_key", "assignee"),
+        "plan": (
+            "issue_key",
+            "move_to_current_sprint",
+            "story_points",
+            "priority",
+        ),
     }
     lines = [f"**Approval required: {labels.get(action.action_type, action.action_type)}**"]
     for field in field_order.get(action.action_type, tuple(payload)):
         value = payload.get(field)
         if action.action_type == "assign" and field == "assignee" and value is None:
             value = "Unassigned"
+        if action.action_type == "plan" and field == "move_to_current_sprint":
+            value = "Yes" if value else "No"
+        if action.action_type == "plan" and value is None:
+            value = "No change"
         lines.append(f"**{field.replace('_', ' ').title()}:** {_clean_text(value, 800)}")
     return "\n".join(lines)[:1_800]
 
@@ -398,6 +435,39 @@ def _normalize_jira_action(
             if not assignee:
                 raise ValueError("Jira assignee cannot be empty.")
         return {"issue_key": issue_key, "assignee": assignee}
+    if action_type == "plan":
+        move_to_current_sprint = payload.get("move_to_current_sprint")
+        if not isinstance(move_to_current_sprint, bool):
+            raise ValueError("Jira move to current sprint must be true or false.")
+
+        raw_story_points = payload.get("story_points")
+        story_points: int | float | None = None
+        if raw_story_points is not None:
+            if isinstance(raw_story_points, bool):
+                raise ValueError("Jira story points must be a number.")
+            try:
+                numeric_points = float(raw_story_points)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Jira story points must be a number.") from exc
+            if not math.isfinite(numeric_points) or numeric_points < 0:
+                raise ValueError("Jira story points must be zero or greater.")
+            story_points = (
+                int(numeric_points) if numeric_points.is_integer() else numeric_points
+            )
+
+        priority = payload.get("priority")
+        if priority is not None:
+            priority = str(priority).strip() or None
+        if not move_to_current_sprint and story_points is None and priority is None:
+            raise ValueError("A Jira planning request must contain at least one change.")
+        if move_to_current_sprint or story_points is not None:
+            get_jira_board_id()
+        return {
+            "issue_key": issue_key,
+            "move_to_current_sprint": move_to_current_sprint,
+            "story_points": story_points,
+            "priority": priority,
+        }
     raise ValueError(f"Unsupported Jira action: {action_type}")
 
 

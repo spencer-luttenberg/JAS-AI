@@ -603,8 +603,8 @@ def question_requests_jira_overview(question: str) -> bool:
 async def jira_group(ctx):
     await ctx.send(
         "Jira commands: `!jira search`, `create`, `edit`, `comment`, "
-        "`transition`, `assign`, and `sync`. Every write command requires "
-        "confirmation before Jira is changed."
+        "`transition`, `assign`, `plan`, and `sync`. Every write command "
+        "requires confirmation before Jira is changed."
     )
 
 
@@ -788,6 +788,46 @@ async def jira_assign(ctx, *, details: str | None = None):
         ctx,
         "assign",
         {"issue_key": issue_key, "assignee": normalized_assignee},
+    )
+
+
+@jira_group.command(name="plan")
+async def jira_plan(ctx, *, details: str | None = None):
+    if not await jira_command_is_available(ctx):
+        return
+    parts = _jira_command_parts(details, 4)
+    if parts is None:
+        await ctx.send(
+            "Usage: `!jira plan ISSUE-123 | current/- | STORY POINTS/- | "
+            "PRIORITY/-`"
+        )
+        return
+    issue_key, sprint, story_points, priority = parts
+    try:
+        issue_key = validate_issue_key(issue_key)
+    except ValueError as exc:
+        await ctx.send(str(exc))
+        return
+    if not _jira_issue_is_configured(issue_key):
+        await ctx.send("That issue is outside the projects in `JIRA_PROJECT_KEYS`.")
+        return
+
+    no_change_values = {"", "-", "none", "unchanged"}
+    sprint_value = sprint.casefold()
+    if sprint_value not in no_change_values | {"current"}:
+        await ctx.send("Sprint must be `current` or `-` for no change.")
+        return
+    points_value = None if story_points.casefold() in no_change_values else story_points
+    priority_value = None if priority.casefold() in no_change_values else priority
+    await propose_jira_action(
+        ctx,
+        "plan",
+        {
+            "issue_key": issue_key,
+            "move_to_current_sprint": sprint_value == "current",
+            "story_points": points_value,
+            "priority": priority_value,
+        },
     )
 
 

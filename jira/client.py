@@ -200,6 +200,58 @@ class JiraClient:
         )
         return issue_key
 
+    async def get_active_sprint(self, board_id: int) -> dict[str, Any]:
+        response = await self.request(
+            "GET",
+            f"/rest/agile/1.0/board/{board_id}/sprint",
+            params={"state": "active", "maxResults": 50},
+        )
+        sprints = response.get("values", [])
+        if not sprints:
+            raise ValueError(f"Jira board {board_id} has no active sprint.")
+        if len(sprints) > 1:
+            names = ", ".join(str(sprint.get("name", sprint["id"])) for sprint in sprints)
+            raise ValueError(
+                f"Jira board {board_id} has multiple active sprints: {names}."
+            )
+        return sprints[0]
+
+    async def move_issue_to_sprint(self, issue_key: str, sprint_id: int) -> str:
+        issue_key = validate_issue_key(issue_key)
+        await self.request(
+            "POST",
+            f"/rest/agile/1.0/sprint/{sprint_id}/issue",
+            json={"issues": [issue_key]},
+        )
+        return issue_key
+
+    async def get_issue_estimation(
+        self,
+        issue_key: str,
+        board_id: int,
+    ) -> dict[str, Any]:
+        issue_key = validate_issue_key(issue_key)
+        return await self.request(
+            "GET",
+            f"/rest/agile/1.0/issue/{quote(issue_key)}/estimation",
+            params={"boardId": board_id},
+        )
+
+    async def estimate_issue(
+        self,
+        issue_key: str,
+        board_id: int,
+        value: int | float,
+    ) -> str:
+        issue_key = validate_issue_key(issue_key)
+        await self.request(
+            "PUT",
+            f"/rest/agile/1.0/issue/{quote(issue_key)}/estimation",
+            params={"boardId": board_id},
+            json={"value": str(value)},
+        )
+        return issue_key
+
     async def _resolve_assignable_user(self, issue_key: str, query: str) -> str:
         users = await self.request(
             "GET",
@@ -320,6 +372,21 @@ def get_jira_project_keys() -> tuple[str, ...]:
 
 def get_jira_default_issue_type() -> str:
     return os.getenv("JIRA_DEFAULT_ISSUE_TYPE", "Story").strip() or "Story"
+
+
+def get_jira_board_id() -> int:
+    raw_value = os.getenv("JIRA_BOARD_ID", "").strip()
+    if not raw_value:
+        raise ValueError(
+            "JIRA_BOARD_ID is required for sprint and story-point changes."
+        )
+    try:
+        board_id = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("JIRA_BOARD_ID must be a positive whole number.") from exc
+    if board_id < 1:
+        raise ValueError("JIRA_BOARD_ID must be a positive whole number.")
+    return board_id
 
 
 def get_jira_sync_interval() -> int:
