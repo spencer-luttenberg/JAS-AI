@@ -798,6 +798,22 @@ The code is requesting Message Content Intent, but the intent is not enabled
 for the application. Enable it under **Bot > Privileged Gateway Intents** in
 the Discord Developer Portal, then restart the bot.
 
+### Discord Login Fails with `429` or Cloudflare Error `1015`
+
+Discord temporarily rate-limited Railway's outbound IP. This is not an invalid
+token error; an invalid token returns `401`. Do not regenerate the token solely
+because of this message, and avoid repeatedly restarting or redeploying the
+service while the block is active.
+
+Current code keeps the container alive and retries Discord login with
+exponential delays of 1, 2, 4, 8, and then at most 15 minutes. Deploy it once
+and watch for `Discord temporarily rate-limited bot login` in the logs. When
+Discord lifts the temporary block, the same container logs in automatically.
+
+If Cloudflare error `1015` continues for several hours, stop the Railway service
+for 30 minutes before starting it once, or move the service to another Railway
+region so it receives a different outbound route.
+
 ### Backfill Reports `Cannot Read History`
 
 Grant **View Channel** and **Read Message History** for that channel. Confirm

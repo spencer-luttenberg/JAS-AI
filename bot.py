@@ -920,5 +920,39 @@ def _jira_issue_is_configured(issue_key: str) -> bool:
     return issue_key.rsplit("-", 1)[0] in get_jira_project_keys()
 
 
+def _discord_login_retry_delay(attempt: int) -> int:
+    return min(60 * (2 ** min(attempt, 4)), 15 * 60)
+
+
+async def run_bot(
+    client: discord.Client = bot,
+    token: str = DISCORD_TOKEN,
+) -> None:
+    attempt = 0
+    while True:
+        try:
+            async with client:
+                await client.start(token)
+            return
+        except discord.LoginFailure:
+            raise
+        except discord.HTTPException as exc:
+            if exc.status != 429:
+                raise
+
+            delay = _discord_login_retry_delay(attempt)
+            attempt += 1
+            logger.warning(
+                "Discord temporarily rate-limited bot login; retrying in %s "
+                "seconds without restarting the container",
+                delay,
+            )
+            await asyncio.sleep(delay)
+            client.clear()
+
+
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        pass
