@@ -811,6 +811,14 @@ Run `!jira sync` as the Discord application owner and inspect the deployment
 logs. Confirm `JIRA_PROJECT_KEYS` uses issue-key prefixes, the account can browse
 those projects, and migration `005_create_jira_integration.sql` was applied.
 
+### Mentions Say They Cannot See Jira but `!jira search` Works
+
+Redeploy the latest code. Questions containing Jira, ticket, sprint, backlog,
+or board language automatically include a compact overview of the 40 most
+recently updated Jira issues. This lets questions such as `what tickets are
+currently open?` work even when the words in the question do not appear in an
+issue's summary or description.
+
 ### A Jira Approval Button Says It Expired
 
 Approval requests last 15 minutes and in-memory Discord buttons do not survive

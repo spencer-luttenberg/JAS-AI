@@ -151,6 +151,35 @@ def format_jira_context(
     return "RELEVANT JIRA ISSUES, COMMENTS, AND CHANGES:\n" + "\n".join(selected_lines)
 
 
+def format_jira_overview_context(
+    issues: Sequence[StoredJiraIssue],
+    *,
+    max_characters: int = 10_000,
+) -> str:
+    lines = [
+        json.dumps(
+            {
+                "issue_key": issue.issue_key,
+                "summary": issue.summary,
+                "issue_type": issue.issue_type,
+                "status": issue.status,
+                "priority": issue.priority,
+                "assignee": issue.assignee,
+                "updated_at": issue.updated_at.isoformat(),
+                "source_url": issue.web_url,
+            },
+            ensure_ascii=True,
+        )
+        for issue in issues
+    ]
+    selected_lines = _fit_lines(lines, max_characters, keep_end=False)
+    if not selected_lines:
+        return ""
+    return "CURRENT JIRA PROJECT OVERVIEW (most recently updated first):\n" + "\n".join(
+        selected_lines
+    )
+
+
 def format_project_activity_context(
     new_messages: Sequence[StoredMessage],
     follow_up_candidates: Sequence[StoredMessage],

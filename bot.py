@@ -14,10 +14,11 @@ from ai.context import (
     format_conversation_context,
     format_drive_context,
     format_jira_context,
+    format_jira_overview_context,
 )
 from database.db import close_database, connect_database
 from database.drive_files import search_drive_files
-from database.jira import search_jira_issues
+from database.jira import get_recent_jira_issues, search_jira_issues
 from database.messages import (
     delete_message,
     delete_messages,
@@ -174,11 +175,23 @@ async def answer_question(
 
                 try:
                     if jira_is_configured():
+                        project_keys = get_jira_project_keys()
                         jira_issues = await search_jira_issues(
                             search_query,
-                            project_keys=get_jira_project_keys(),
+                            project_keys=project_keys,
                         )
-                        jira_context = format_jira_context(jira_issues)
+                        jira_sections = [format_jira_context(jira_issues)]
+                        if question_requests_jira_overview(question):
+                            recent_issues = await get_recent_jira_issues(
+                                project_keys,
+                                limit=40,
+                            )
+                            jira_sections.append(
+                                format_jira_overview_context(recent_issues)
+                            )
+                        jira_context = "\n\n".join(
+                            section for section in jira_sections if section
+                        )
                 except Exception:
                     logger.exception("Could not load Jira context")
 
@@ -518,6 +531,33 @@ async def jira_command_is_available(ctx: commands.Context) -> bool:
         await ctx.send("Jira is not configured on this deployment.")
         return False
     return True
+
+
+def question_requests_jira_overview(question: str) -> bool:
+    terms = set(re.findall(r"[a-z0-9]+", question.casefold()))
+    direct_terms = {
+        "backlog",
+        "board",
+        "jira",
+        "sprint",
+        "ticket",
+        "tickets",
+    }
+    if terms & direct_terms:
+        return True
+
+    work_terms = {"bug", "bugs", "epic", "epics", "issue", "issues", "task", "tasks"}
+    state_terms = {
+        "assigned",
+        "closed",
+        "current",
+        "currently",
+        "done",
+        "open",
+        "pending",
+        "status",
+    }
+    return bool(terms & work_terms and terms & state_terms)
 
 
 @bot.group(name="jira", invoke_without_command=True)
