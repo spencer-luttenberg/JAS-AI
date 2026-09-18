@@ -234,6 +234,7 @@ def _serialize_message(message: StoredMessage) -> str:
             "timestamp": message.created_at.isoformat(),
             "author": message.author_name,
             "is_bot": message.is_bot,
+            "role": "assistant" if message.is_bot else "user",
             "content": message.content,
             "attachments": attachment_names,
         },

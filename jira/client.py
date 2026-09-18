@@ -318,6 +318,10 @@ def get_jira_project_keys() -> tuple[str, ...]:
     return keys
 
 
+def get_jira_default_issue_type() -> str:
+    return os.getenv("JIRA_DEFAULT_ISSUE_TYPE", "Story").strip() or "Story"
+
+
 def get_jira_sync_interval() -> int:
     raw_value = os.getenv("JIRA_SYNC_INTERVAL_SECONDS", "600")
     try:

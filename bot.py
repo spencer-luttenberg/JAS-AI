@@ -146,23 +146,30 @@ async def answer_question(
             jira_project_keys: tuple[str, ...] = ()
             if message.guild is not None and is_listened_channel(message.channel):
                 search_query = build_history_search_query(question)
+                relevant_messages = []
+                recent_messages = []
+                try:
+                    recent_messages = await get_recent_messages(
+                        message.channel.id,
+                        exclude_message_id=message.id,
+                        limit=20,
+                    )
+                except Exception:
+                    logger.exception("Could not load recent Discord conversation")
+
                 try:
                     relevant_messages = await search_messages(
                         message.guild.id,
                         search_query,
                         exclude_message_id=message.id,
                     )
-                    recent_messages = await get_recent_messages(
-                        message.channel.id,
-                        exclude_message_id=message.id,
-                        limit=15,
-                    )
-                    conversation_context = format_conversation_context(
-                        relevant_messages,
-                        recent_messages,
-                    )
                 except Exception:
-                    logger.exception("Could not load Discord history context")
+                    logger.exception("Could not search long-term Discord history")
+
+                conversation_context = format_conversation_context(
+                    relevant_messages,
+                    recent_messages,
+                )
 
                 if google_drive_is_configured():
                     try:
@@ -231,16 +238,18 @@ async def answer_question(
 
     for index, chunk in enumerate(split_message(answer)):
         if reply_to_message and index == 0:
-            await message.reply(
+            sent_message = await message.reply(
                 chunk,
                 mention_author=False,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         else:
-            await message.channel.send(
+            sent_message = await message.channel.send(
                 chunk,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+        if should_store_message(sent_message):
+            await store_message(sent_message)
 
 
 async def sync_channel_history(channel_id: int) -> None:
@@ -397,6 +406,15 @@ async def on_message(message: discord.Message):
 
     mention_question = extract_mention_question(message)
     if mention_question is not None:
+        if message.guild is not None and not is_listened_channel(message.channel):
+            await message.reply(
+                "This channel is not included in `LISTEN_CHANNEL_IDS`, so I "
+                "cannot use conversation memory or connected Jira tools here. "
+                "Add this channel's ID to that Railway variable and redeploy me.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
         if not mention_question:
             await message.reply(
                 "Mention me followed by a question, for example: "

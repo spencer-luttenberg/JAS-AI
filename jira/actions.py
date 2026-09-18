@@ -19,6 +19,7 @@ from database.jira import (
 from jira.client import (
     JiraAPIError,
     JiraClient,
+    get_jira_default_issue_type,
     get_jira_project_keys,
     validate_issue_key,
     validate_project_key,
@@ -356,9 +357,12 @@ def _normalize_jira_action(
         project_key = validate_project_key(_required_text(payload, "project_key"))
         if project_key not in project_keys:
             raise ValueError("That project is outside JIRA_PROJECT_KEYS.")
+        issue_type = payload.get("issue_type")
+        if issue_type is None or not str(issue_type).strip():
+            issue_type = get_jira_default_issue_type()
         return {
             "project_key": project_key,
-            "issue_type": _required_text(payload, "issue_type"),
+            "issue_type": str(issue_type).strip(),
             "summary": _required_text(payload, "summary"),
             "description": str(payload.get("description", "")).strip(),
         }

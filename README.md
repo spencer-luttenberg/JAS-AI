@@ -140,6 +140,7 @@ service.
 | `JIRA_EMAIL` | Optional; email for the Atlassian account that owns the token |
 | `JIRA_API_TOKEN` | Optional; Atlassian API token, never an account password |
 | `JIRA_PROJECT_KEYS` | Optional; comma-separated project keys such as `JAS,OPS` |
+| `JIRA_DEFAULT_ISSUE_TYPE` | Optional; defaults to `Story` for natural-language creates |
 | `JIRA_SYNC_INTERVAL_SECONDS` | Optional; defaults to `600`, minimum `300` |
 
 For `DATABASE_URL`, replace `Postgres` with the exact PostgreSQL service name.
@@ -296,6 +297,7 @@ JIRA_BASE_URL=https://your-site.atlassian.net
 JIRA_EMAIL=jas-ai-account@example.com
 JIRA_API_TOKEN=YOUR_ATLASSIAN_API_TOKEN
 JIRA_PROJECT_KEYS=JAS,OPS
+JIRA_DEFAULT_ISSUE_TYPE=Story
 JIRA_SYNC_INTERVAL_SECONDS=600
 ```
 
@@ -434,8 +436,17 @@ You can also request a change naturally by mentioning the bot:
 ```
 
 For an explicit Jira write request, Jarrett AI extracts the proposed fields and
-posts the same approval preview automatically. You do not need to type an
-approval phrase.
+posts the same approval preview automatically. When only one project is listed
+in `JIRA_PROJECT_KEYS`, the bot uses it automatically. If you do not name an
+issue type, it uses `JIRA_DEFAULT_ISSUE_TYPE` (`Story` by default). Priority and
+assignee are not required for creation. You do not need to type an approval
+phrase.
+
+Follow-up mentions use the recent channel conversation, so messages such as
+`what options do you have for those?` or `make it a User Story` can refer to the
+preceding exchange. This works only in channels included in
+`LISTEN_CHANNEL_IDS`. In any other server channel, the bot explains that memory
+and connected tools are unavailable instead of answering without context.
 
 Click **Cancel** to verify that nothing changes. Run it again and click
 **Confirm** to apply it. Only the Discord user who issued the command can use
@@ -591,6 +602,7 @@ $env:JIRA_BASE_URL="https://your-site.atlassian.net"
 $env:JIRA_EMAIL="jas-ai-account@example.com"
 $env:JIRA_API_TOKEN="YOUR_ATLASSIAN_API_TOKEN"
 $env:JIRA_PROJECT_KEYS="JAS,OPS"
+$env:JIRA_DEFAULT_ISSUE_TYPE="Story"
 
 python bot.py
 ```
@@ -829,6 +841,14 @@ or board language automatically include a compact overview of the 40 most
 recently updated Jira issues. This lets questions such as `what tickets are
 currently open?` work even when the words in the question do not appear in an
 issue's summary or description.
+
+### The Bot Forgets the Immediately Previous Message
+
+Confirm the current channel ID appears in the bot service's
+`LISTEN_CHANNEL_IDS`, then redeploy after changing the variable. The bot only
+loads and stores conversation context in those approved channels. Current code
+also stores its own replies immediately, so the next mention can resolve short
+follow-ups such as `those`, `that ticket`, or `make it a Story`.
 
 ### A Jira Approval Button Says It Expired
 
