@@ -25,6 +25,7 @@ from database.project_updates import (
 )
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
 from jira.client import get_jira_project_keys, jira_is_configured
+from jira.sync import sync_jira, sync_jira_issue
 
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,24 @@ async def publish_project_update(
 
         jira_context = ""
         if jira_is_configured():
+            try:
+                await sync_jira()
+            except Exception:
+                logger.exception(
+                    "Pre-report Jira refresh failed; using cached Jira data"
+                )
+            jira_issues = await get_recent_jira_issues(
+                get_jira_project_keys(),
+                limit=20,
+            )
+            for issue in jira_issues:
+                try:
+                    await sync_jira_issue(issue.issue_key)
+                except Exception:
+                    logger.exception(
+                        "Pre-report refresh failed for Jira issue %s",
+                        issue.issue_key,
+                    )
             jira_issues = await get_recent_jira_issues(
                 get_jira_project_keys(),
             )

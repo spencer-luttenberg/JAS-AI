@@ -717,7 +717,18 @@ Jira sync runs once when the bot starts and every 10 minutes by default. The
 first run imports every issue visible to the Jira account in the configured
 projects, including comments and change history. Later runs use Jira's update
 timestamp with a five-minute overlap so edits are not missed. This is polling,
-so an update can take up to the configured interval to appear in answers.
+so ordinary background ingestion can take up to the configured interval.
+Jira-focused questions and scheduled project reports now request an incremental
+refresh before reading the local index. Issue keys found in the question or
+recent Discord conversation are refreshed directly, including their comments
+and change history. If Jira is temporarily unavailable, the bot falls back to
+the last successfully cached data. Before a scheduled report, the bot also
+directly refreshes the 20 most recently tracked issues to avoid Jira search-index
+delay hiding a newly posted comment.
+
+The `!jira sync` result is an incremental count. For example, `0 changed
+issue(s) imported` means Jira returned no changes since the previous sync; it
+does not mean PostgreSQL contains zero Jira issues.
 
 Scheduled project reports use a separate PostgreSQL state row to claim each
 run, prevent overlapping reports, and remember the last successful completion.
@@ -851,6 +862,15 @@ never exceeds that account's normal Jira permissions.
 Run `!jira sync` as the Discord application owner and inspect the deployment
 logs. Confirm `JIRA_PROJECT_KEYS` uses issue-key prefixes, the account can browse
 those projects, and migration `005_create_jira_integration.sql` was applied.
+
+### A New Jira Comment Does Not Appear
+
+Ask a Jira-focused question again or run `!jira sync` as the Discord application
+owner. Jira-focused answers and project reports refresh Jira before reading the
+local index, and references such as `SCRUM-6` trigger a direct issue refresh.
+If the comment is restricted to a Jira role or group, the account configured in
+`JIRA_EMAIL` must belong to that role or group. A zero-change sync is normal and
+does not mean the existing index is empty.
 
 ### Mentions Say They Cannot See Jira but `!jira search` Works
 

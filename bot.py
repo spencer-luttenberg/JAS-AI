@@ -39,7 +39,7 @@ from jira.client import (
     validate_issue_key,
     validate_project_key,
 )
-from jira.sync import run_jira_sync_forever, sync_jira
+from jira.sync import run_jira_sync_forever, sync_jira, sync_jira_issue
 from project_updates.scheduler import (
     get_project_update_channel_id,
     publish_project_update,
@@ -185,12 +185,40 @@ async def answer_question(
                     if jira_is_configured():
                         project_keys = get_jira_project_keys()
                         jira_project_keys = project_keys
+                        refresh_jira = question_requests_jira_overview(question)
+                        if refresh_jira:
+                            try:
+                                await sync_jira()
+                            except Exception:
+                                logger.exception(
+                                    "Live Jira refresh failed; using cached Jira data"
+                                )
+
+                        referenced_issue_keys = ()
+                        if refresh_jira or re.search(
+                            r"\b[A-Z][A-Z0-9_]*-\d+\b",
+                            question.upper(),
+                        ):
+                            referenced_issue_keys = referenced_jira_issue_keys(
+                                question,
+                                conversation_context,
+                                project_keys,
+                            )
+                        for issue_key in referenced_issue_keys:
+                            try:
+                                await sync_jira_issue(issue_key)
+                            except Exception:
+                                logger.exception(
+                                    "Could not refresh referenced Jira issue %s",
+                                    issue_key,
+                                )
+
                         jira_issues = await search_jira_issues(
                             search_query,
                             project_keys=project_keys,
                         )
                         jira_sections = [format_jira_context(jira_issues)]
-                        if question_requests_jira_overview(question):
+                        if refresh_jira:
                             recent_issues = await get_recent_jira_issues(
                                 project_keys,
                                 limit=40,
@@ -577,10 +605,15 @@ def question_requests_jira_overview(question: str) -> bool:
     direct_terms = {
         "backlog",
         "board",
+        "comment",
+        "comments",
         "jira",
         "sprint",
         "ticket",
         "tickets",
+        "update",
+        "updates",
+        "worklog",
     }
     if terms & direct_terms:
         return True
@@ -597,6 +630,30 @@ def question_requests_jira_overview(question: str) -> bool:
         "status",
     }
     return bool(terms & work_terms and terms & state_terms)
+
+
+def referenced_jira_issue_keys(
+    question: str,
+    conversation_context: str,
+    project_keys: tuple[str, ...],
+    *,
+    limit: int = 5,
+) -> tuple[str, ...]:
+    recent_marker = "RECENT CHANNEL CONVERSATION (oldest to newest):"
+    recent_context = conversation_context.rsplit(recent_marker, 1)[-1]
+    matches = re.findall(
+        r"\b[A-Z][A-Z0-9_]*-\d+\b",
+        question.upper() + "\n" + recent_context.upper(),
+    )
+    allowed_projects = set(project_keys)
+    issue_keys = tuple(
+        dict.fromkeys(
+            issue_key
+            for issue_key in matches
+            if issue_key.rsplit("-", 1)[0] in allowed_projects
+        )
+    )
+    return issue_keys[-limit:]
 
 
 @bot.group(name="jira", invoke_without_command=True)
@@ -844,8 +901,9 @@ async def jira_sync(ctx):
         await ctx.send("Jira sync failed. Check the deployment logs.")
         return
     await ctx.send(
-        f"Jira sync complete: {result.issues_synced} issue(s) across "
-        f"{result.projects_synced} project(s)."
+        f"Jira sync complete: {result.issues_synced} changed issue(s) imported "
+        f"across {result.projects_synced} project(s). A zero count means no "
+        "new changes were found, not that the Jira index is empty."
     )
 
 
