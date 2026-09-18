@@ -427,6 +427,16 @@ a preview and does not send a write request to Jira:
 !jira comment JAS-42 | Testing Jarrett AI's approval flow.
 ```
 
+You can also request a change naturally by mentioning the bot:
+
+```text
+@JAS AI Create a Story in SCRUM to document our Perforce workflow and include acceptance criteria.
+```
+
+For an explicit Jira write request, Jarrett AI extracts the proposed fields and
+posts the same approval preview automatically. You do not need to type an
+approval phrase.
+
 Click **Cancel** to verify that nothing changes. Run it again and click
 **Confirm** to apply it. Only the Discord user who issued the command can use
 that request's buttons, and an unconfirmed request expires after 15 minutes.
@@ -717,10 +727,11 @@ questions.
   `unassigned` to clear it
 - `!jira sync` immediately refreshes Jira for the Discord application owner
 
-Every Jira create, edit, comment, transition, or assignment command creates a
-Discord preview with **Confirm** and **Cancel** buttons. No Jira write is made
-until the requesting user clicks **Confirm**. Natural-language questions and
-scheduled reports can read Jira context but cannot bypass this approval path.
+Every Jira create, edit, comment, transition, or assignment request creates a
+Discord preview with **Confirm** and **Cancel** buttons, whether it came from a
+`!jira` command or an explicit natural-language request to `@JAS AI`. No Jira
+write is made until the requesting user clicks **Confirm**. Scheduled reports
+and ordinary questions can read Jira context but cannot bypass this path.
 
 ## Troubleshooting
 
@@ -866,6 +877,7 @@ python -m pip check
 - [Discord privileged intents](https://discord.com/developers/docs/events/gateway#privileged-intents)
 - [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart/)
 - [OpenAI Responses web search](https://developers.openai.com/api/docs/guides/tools-web-search)
+- [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling)
 - [Google service-account authentication](https://developers.google.com/identity/protocols/oauth2/service-account)
 - [Google Drive file search](https://developers.google.com/workspace/drive/api/guides/search-files)
 - [Google Drive downloads and exports](https://developers.google.com/workspace/drive/api/guides/manage-downloads)

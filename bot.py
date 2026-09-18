@@ -31,7 +31,7 @@ from database.messages import (
 )
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
 from google_drive.sync import run_google_drive_sync_forever, sync_google_drive
-from jira.actions import propose_jira_action
+from jira.actions import propose_jira_action, propose_jira_action_from_message
 from jira.client import (
     get_jira_project_keys,
     get_jira_sync_interval,
@@ -143,6 +143,7 @@ async def answer_question(
             conversation_context = ""
             drive_context = ""
             jira_context = ""
+            jira_project_keys: tuple[str, ...] = ()
             if message.guild is not None and is_listened_channel(message.channel):
                 search_query = build_history_search_query(question)
                 try:
@@ -176,6 +177,7 @@ async def answer_question(
                 try:
                     if jira_is_configured():
                         project_keys = get_jira_project_keys()
+                        jira_project_keys = project_keys
                         jira_issues = await search_jira_issues(
                             search_query,
                             project_keys=project_keys,
@@ -195,11 +197,12 @@ async def answer_question(
                 except Exception:
                     logger.exception("Could not load Jira context")
 
-            answer = await ask_openai(
+            bot_answer = await ask_openai(
                 question,
                 conversation_context,
                 drive_context,
                 jira_context,
+                jira_project_keys,
             )
     except OpenAIError:
         logger.exception("OpenAI request failed")
@@ -207,6 +210,24 @@ async def answer_question(
             "I couldn't reach OpenAI. Please try again in a moment."
         )
         return
+
+    if bot_answer.jira_action is not None:
+        try:
+            await propose_jira_action_from_message(
+                message,
+                bot_answer.jira_action.action_type,
+                bot_answer.jira_action.payload,
+            )
+        except Exception:
+            logger.exception("Could not create Jira approval request")
+            await message.channel.send(
+                "I couldn't create the Jira approval request. Check the "
+                "deployment logs and try again.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        return
+
+    answer = bot_answer.text
 
     for index, chunk in enumerate(split_message(answer)):
         if reply_to_message and index == 0:

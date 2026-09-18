@@ -16,7 +16,13 @@ from database.jira import (
     fail_pending_jira_action,
     get_pending_jira_action,
 )
-from jira.client import JiraAPIError, JiraClient, get_jira_project_keys
+from jira.client import (
+    JiraAPIError,
+    JiraClient,
+    get_jira_project_keys,
+    validate_issue_key,
+    validate_project_key,
+)
 from jira.sync import sync_jira_issue
 
 
@@ -39,14 +45,17 @@ async def propose_jira_action(
         await ctx.send("Jira changes can only be requested from a server channel.")
         return
 
-    action = await create_pending_jira_action(
-        requester_id=ctx.author.id,
-        guild_id=ctx.guild.id,
-        channel_id=ctx.channel.id,
-        action_type=action_type,
-        payload=payload,
-    )
-    view = JiraApprovalView(action.action_id, action.requester_id)
+    try:
+        action, view = await _create_approval(
+            requester_id=ctx.author.id,
+            guild_id=ctx.guild.id,
+            channel_id=ctx.channel.id,
+            action_type=action_type,
+            payload=payload,
+        )
+    except ValueError as exc:
+        await ctx.send(str(exc))
+        return
     message = await ctx.send(
         describe_action(action)
         + "\n\nNo Jira change has been made. This request expires in 15 minutes.",
@@ -54,6 +63,58 @@ async def propose_jira_action(
         allowed_mentions=discord.AllowedMentions.none(),
     )
     view.message = message
+
+
+async def propose_jira_action_from_message(
+    message: discord.Message,
+    action_type: str,
+    payload: dict[str, Any],
+) -> None:
+    if message.guild is None:
+        await message.reply(
+            "Jira changes can only be requested from a server channel.",
+            mention_author=False,
+        )
+        return
+
+    try:
+        action, view = await _create_approval(
+            requester_id=message.author.id,
+            guild_id=message.guild.id,
+            channel_id=message.channel.id,
+            action_type=action_type,
+            payload=payload,
+        )
+    except ValueError as exc:
+        await message.reply(str(exc), mention_author=False)
+        return
+    sent_message = await message.reply(
+        describe_action(action)
+        + "\n\nNo Jira change has been made. This request expires in 15 minutes.",
+        mention_author=False,
+        view=view,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    view.message = sent_message
+
+
+async def _create_approval(
+    *,
+    requester_id: int,
+    guild_id: int,
+    channel_id: int,
+    action_type: str,
+    payload: dict[str, Any],
+) -> tuple[PendingJiraAction, "JiraApprovalView"]:
+    normalized_payload = _normalize_jira_action(action_type, payload)
+    action = await create_pending_jira_action(
+        requester_id=requester_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        action_type=action_type,
+        payload=normalized_payload,
+    )
+    return action, JiraApprovalView(action.action_id, action.requester_id)
 
 
 class JiraApprovalView(discord.ui.View):
@@ -284,3 +345,60 @@ def _require_configured_project(action: PendingJiraAction) -> None:
         project_key = str(action.payload["issue_key"]).upper().rsplit("-", 1)[0]
     if project_key not in get_jira_project_keys():
         raise ValueError("That issue is outside the projects in JIRA_PROJECT_KEYS")
+
+
+def _normalize_jira_action(
+    action_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    project_keys = get_jira_project_keys()
+    if action_type == "create":
+        project_key = validate_project_key(_required_text(payload, "project_key"))
+        if project_key not in project_keys:
+            raise ValueError("That project is outside JIRA_PROJECT_KEYS.")
+        return {
+            "project_key": project_key,
+            "issue_type": _required_text(payload, "issue_type"),
+            "summary": _required_text(payload, "summary"),
+            "description": str(payload.get("description", "")).strip(),
+        }
+
+    issue_key = validate_issue_key(_required_text(payload, "issue_key"))
+    if issue_key.rsplit("-", 1)[0] not in project_keys:
+        raise ValueError("That issue is outside JIRA_PROJECT_KEYS.")
+
+    if action_type == "edit":
+        field = _required_text(payload, "field").casefold()
+        if field not in {"summary", "description", "priority", "labels"}:
+            raise ValueError(
+                "Editable Jira fields are summary, description, priority, and labels."
+            )
+        value = str(payload.get("value", "")).strip()
+        if not value and field not in {"description", "labels"}:
+            raise ValueError(f"Jira field {field} cannot be empty.")
+        return {"issue_key": issue_key, "field": field, "value": value}
+    if action_type == "comment":
+        return {
+            "issue_key": issue_key,
+            "comment": _required_text(payload, "comment"),
+        }
+    if action_type == "transition":
+        return {
+            "issue_key": issue_key,
+            "status": _required_text(payload, "status"),
+        }
+    if action_type == "assign":
+        assignee = payload.get("assignee")
+        if assignee is not None:
+            assignee = str(assignee).strip()
+            if not assignee:
+                raise ValueError("Jira assignee cannot be empty.")
+        return {"issue_key": issue_key, "assignee": assignee}
+    raise ValueError(f"Unsupported Jira action: {action_type}")
+
+
+def _required_text(payload: dict[str, Any], field: str) -> str:
+    value = str(payload.get(field, "")).strip()
+    if not value:
+        raise ValueError(f"Jira {field.replace('_', ' ')} cannot be empty.")
+    return value
