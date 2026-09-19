@@ -58,9 +58,13 @@ async def ask_companion(
         "of inventing project facts. Jira data supplied here is read-only. "
         "When Unreal Editor state or an editor operation is needed, call exactly "
         "one available Unreal MCP function. The local companion will ask the "
-        "developer for approval and execute it on localhost; never claim a tool "
-        "ran until its result appears in the local conversation. Prefer discovery "
-        "or inspection before mutation when the required Unreal tool is unclear."
+        "developer for approval before an editor operation and execute it on "
+        "localhost; never claim a tool ran until its result appears in the local "
+        "conversation. The local companion automatically executes the read-only "
+        "list_toolsets and describe_toolset discovery functions, so call those "
+        "directly whenever needed. Never merely propose a necessary function in "
+        "prose: emit the function call. Prefer discovery or inspection before "
+        "mutation when the required Unreal tool is unclear."
     )
 
     tools = [_openai_tool(tool) for tool in unreal_tools]
