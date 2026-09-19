@@ -130,6 +130,36 @@ async def get_recent_messages(
     ]
 
 
+async def get_recent_guild_messages(
+    guild_id: int,
+    *,
+    limit: int = 30,
+) -> list[StoredMessage]:
+    records = await get_pool().fetch(
+        """
+        SELECT message_id, channel_id, author_name, is_bot, content, attachments, created_at
+        FROM (
+            SELECT
+                message_id,
+                channel_id,
+                author_name,
+                is_bot,
+                content,
+                attachments,
+                created_at
+            FROM discord_messages
+            WHERE guild_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+        ) AS recent_messages
+        ORDER BY created_at ASC
+        """,
+        guild_id,
+        max(1, min(limit, 100)),
+    )
+    return [_stored_message(record) for record in records]
+
+
 async def search_messages(
     guild_id: int,
     search_query: str,

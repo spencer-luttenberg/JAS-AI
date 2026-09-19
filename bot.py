@@ -16,6 +16,7 @@ from ai.context import (
     format_jira_context,
     format_jira_overview_context,
 )
+from companion_api.server import start_companion_api
 from database.db import close_database, connect_database
 from database.drive_files import search_drive_files
 from database.jira import get_recent_jira_issues, search_jira_issues
@@ -91,7 +92,6 @@ class JarrettBot(commands.Bot):
             with suppress(asyncio.CancelledError):
                 await self.project_update_task
 
-        await close_database()
         await super().close()
 
 
@@ -951,8 +951,19 @@ async def run_bot(
             client.clear()
 
 
+async def run_application() -> None:
+    await connect_database()
+    companion_api = await start_companion_api()
+    try:
+        await run_bot()
+    finally:
+        if companion_api is not None:
+            await companion_api.close()
+        await close_database()
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(run_bot())
+        asyncio.run(run_application())
     except KeyboardInterrupt:
         pass

@@ -693,6 +693,66 @@ The result is posted in `PROJECT_UPDATE_CHANNEL_ID`. If you also want discussion
 inside the update channel recorded as long-term memory, add its ID to
 `LISTEN_CHANNEL_IDS`; that is optional for scheduled posting.
 
+## 14. Connect the Local Unreal Companion
+
+The separate `JAS-UE-Companion` repository gives developers a local chat UI
+with the same stored Discord, Google Drive, and Jira context as this service.
+The local app talks directly to an authenticated HTTP API on Railway. It does
+not send messages through Discord.
+
+Unreal MCP remains on `127.0.0.1` on each developer computer. Railway can
+propose an editor tool call, but it cannot reach or operate the editor. The
+local companion displays the tool name and JSON arguments and only runs the
+call after the developer selects **Approve and run**.
+
+### Add the Railway Variables
+
+1. In Discord, enable **Developer Mode** under **User Settings > Advanced**.
+2. Right-click the server icon and select **Copy Server ID**.
+3. Generate a separate random companion key for each developer. In PowerShell:
+
+   ```powershell
+   $bytes = New-Object byte[] 32
+   [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+   [Convert]::ToBase64String($bytes)
+   ```
+
+4. Open the Railway **JAS-AI** service, then open **Variables**.
+5. Add these variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `COMPANION_GUILD_ID` | The copied numeric Discord server ID |
+   | `COMPANION_API_KEYS` | The generated developer key, or comma-separated keys for multiple developers |
+   | `PORT` | `8080` |
+
+6. Deploy the staged changes.
+7. Open the service's **Settings** and locate **Networking**.
+8. Under **Public Networking**, select **Generate Domain** and use target port
+   `8080` if Railway asks for one.
+9. Save the resulting HTTPS URL, such as
+   `https://jas-ai-production.up.railway.app`.
+10. Open `https://YOUR-DOMAIN/health`. A healthy deployment returns JSON with
+    `"status": "ok"`.
+
+Do not add the public URL or companion key to Discord. Give each developer one
+key through a password manager. To revoke access, remove that key from
+`COMPANION_API_KEYS` and redeploy.
+
+### What the API Can Access
+
+- It searches messages already retained from the configured Discord server.
+- It searches the same synchronized Drive file chunks and Jira issue activity.
+- It can ask OpenAI to answer or propose one of the Unreal tools advertised by
+  the local client.
+- It cannot connect to Unreal directly and exposes no endpoint for dumping the
+  raw PostgreSQL tables.
+- Jira context is currently read-only in the companion. Existing Discord Jira
+  confirmations continue to control Jira writes.
+
+Finish setup from the `JAS-UE-Companion` repository's README on each developer
+computer.
+
 ## How Long-Term Memory Works
 
 The bot does not send the entire Discord archive to OpenAI on every question.
@@ -932,7 +992,8 @@ python -m pip check
 ## Security and Privacy
 
 - Never commit or share `DISCORD_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`,
-  `DATABASE_PUBLIC_URL`, `JIRA_API_TOKEN`, or service-account credentials.
+  `DATABASE_PUBLIC_URL`, `JIRA_API_TOKEN`, `COMPANION_API_KEYS`, or
+  service-account credentials.
 - Treat the Google service-account JSON as a password. Never commit it, post
   it in Discord, or include it in screenshots.
 - Reset any secret immediately if it is exposed.
