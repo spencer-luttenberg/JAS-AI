@@ -9,8 +9,14 @@ from typing import Any
 from aiohttp import web
 
 from companion_api.agent import ask_companion
+from companion_api.attachments import (
+    MAX_REQUEST_BYTES,
+    validate_attachment_budget,
+    validate_attachments,
+)
 from companion_api.context import build_shared_context, get_companion_guild_id
 from database.db import get_pool
+from github.client import github_is_configured
 from google_drive.client import google_drive_is_configured
 from jira.client import jira_is_configured
 
@@ -62,7 +68,7 @@ async def start_companion_api() -> CompanionAPIServer:
 
 def create_app(api_keys: tuple[str, ...] | None = None) -> web.Application:
     app = web.Application(
-        client_max_size=512 * 1024,
+        client_max_size=MAX_REQUEST_BYTES,
         middlewares=[_error_middleware, _auth_middleware],
     )
     app[API_KEYS_KEY] = api_keys or _configured_api_keys()
@@ -121,7 +127,9 @@ async def _health(request: web.Request) -> web.Response:
             "companion_auth": companion_api_is_configured(),
             "discord_memory": bool(os.getenv("COMPANION_GUILD_ID", "").strip()),
             "google_drive": google_drive_is_configured(),
+            "github": github_is_configured(),
             "jira": jira_is_configured(),
+            "capabilities": {"attachments": True},
         },
         status=status,
     )
@@ -143,8 +151,20 @@ async def _chat(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="Request body must be a JSON object")
 
+    try:
+        attachments = validate_attachments(body.get("attachments", []))
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    if attachments and body.get("message", "") == "":
+        body["message"] = "Please review the attached files."
     message = _required_string(body, "message", MAX_MESSAGE_CHARACTERS)
     history = _validate_history(body.get("history", []))
+    try:
+        validate_attachment_budget(
+            attachments + [file for item in history for file in item.get("attachments", [])]
+        )
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
     unreal_tools = _validate_unreal_tools(body.get("unreal_tools", []))
 
     semaphore = request.app[CHAT_SEMAPHORE_KEY]
@@ -155,6 +175,7 @@ async def _chat(request: web.Request) -> web.Response:
             history=history,
             shared_context=shared_context,
             unreal_tools=unreal_tools,
+            attachments=attachments,
         )
 
     response: dict[str, Any] = {
@@ -183,11 +204,11 @@ def _required_string(body: dict[str, Any], name: str, max_length: int) -> str:
     return value.strip()
 
 
-def _validate_history(value: Any) -> list[dict[str, str]]:
+def _validate_history(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or len(value) > MAX_HISTORY_ITEMS:
         raise web.HTTPBadRequest(text="history must be a list of at most 40 items")
 
-    history: list[dict[str, str]] = []
+    history: list[dict[str, Any]] = []
     total_characters = 0
     for item in value:
         if not isinstance(item, dict):
@@ -198,6 +219,14 @@ def _validate_history(value: Any) -> list[dict[str, str]]:
             raise web.HTTPBadRequest(text="Invalid history role or content")
         total_characters += len(content)
         history.append({"role": role, "content": content[:MAX_MESSAGE_CHARACTERS]})
+        try:
+            attachments = validate_attachments(item.get("attachments", []))
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        if attachments:
+            if role != "user":
+                raise web.HTTPBadRequest(text="Only user messages can contain attachments")
+            history[-1]["attachments"] = attachments
 
     if total_characters > MAX_HISTORY_CHARACTERS:
         raise web.HTTPRequestEntityTooLarge(

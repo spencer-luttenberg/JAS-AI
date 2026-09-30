@@ -1,8 +1,8 @@
 import asyncio
-from contextlib import suppress
 import logging
 import os
 import re
+from contextlib import suppress
 
 import discord
 from discord.ext import commands
@@ -13,12 +13,14 @@ from ai.context import (
     build_history_search_query,
     format_conversation_context,
     format_drive_context,
+    format_github_context,
     format_jira_context,
     format_jira_overview_context,
 )
 from companion_api.server import start_companion_api
 from database.db import close_database, connect_database
 from database.drive_files import search_drive_files
+from database.github import get_recent_github_chunks, search_github_files
 from database.jira import get_recent_jira_issues, search_jira_issues
 from database.messages import (
     delete_message,
@@ -26,10 +28,16 @@ from database.messages import (
     get_channel_history_sync_state,
     get_recent_messages,
     mark_channel_history_synced,
-    save_messages,
     save_message,
+    save_messages,
     search_messages,
 )
+from github.client import (
+    get_github_repositories,
+    get_github_sync_interval,
+    github_is_configured,
+)
+from github.sync import run_github_sync_forever, sync_github
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
 from google_drive.sync import run_google_drive_sync_forever, sync_google_drive
 from jira.actions import propose_jira_action, propose_jira_action_from_message
@@ -46,7 +54,6 @@ from project_updates.scheduler import (
     publish_project_update,
     run_project_update_scheduler,
 )
-
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 LISTEN_CHANNEL_IDS = {
@@ -65,6 +72,7 @@ intents.message_content = True
 class JarrettBot(commands.Bot):
     history_sync_task: asyncio.Task[None] | None = None
     drive_sync_task: asyncio.Task[None] | None = None
+    github_sync_task: asyncio.Task[None] | None = None
     jira_sync_task: asyncio.Task[None] | None = None
     project_update_task: asyncio.Task[None] | None = None
 
@@ -81,6 +89,11 @@ class JarrettBot(commands.Bot):
             self.drive_sync_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.drive_sync_task
+
+        if self.github_sync_task is not None and not self.github_sync_task.done():
+            self.github_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.github_sync_task
 
         if self.jira_sync_task is not None and not self.jira_sync_task.done():
             self.jira_sync_task.cancel()
@@ -142,6 +155,7 @@ async def answer_question(
         async with message.channel.typing():
             conversation_context = ""
             drive_context = ""
+            github_context = ""
             jira_context = ""
             jira_project_keys: tuple[str, ...] = ()
             if message.guild is not None and is_listened_channel(message.channel):
@@ -180,6 +194,28 @@ async def answer_question(
                         drive_context = format_drive_context(drive_chunks)
                     except Exception:
                         logger.exception("Could not load Google Drive context")
+
+                try:
+                    if github_is_configured():
+                        repositories = get_github_repositories()
+                        github_chunks = (
+                            await search_github_files(
+                                search_query,
+                                repositories=repositories,
+                            )
+                            if search_query
+                            else []
+                        )
+                        if not github_chunks and question_requests_github_context(
+                            question
+                        ):
+                            github_chunks = await get_recent_github_chunks(
+                                repositories,
+                                limit=10,
+                            )
+                        github_context = format_github_context(github_chunks)
+                except Exception:
+                    logger.exception("Could not load GitHub context")
 
                 try:
                     if jira_is_configured():
@@ -234,10 +270,11 @@ async def answer_question(
 
             bot_answer = await ask_openai(
                 question,
-                conversation_context,
-                drive_context,
-                jira_context,
-                jira_project_keys,
+                conversation_context=conversation_context,
+                drive_context=drive_context,
+                github_context=github_context,
+                jira_context=jira_context,
+                jira_project_keys=jira_project_keys,
             )
     except OpenAIError:
         logger.exception("OpenAI request failed")
@@ -379,6 +416,22 @@ async def on_ready():
             "Google Drive indexing is disabled because both "
             "GOOGLE_DRIVE_FOLDER_IDS and a Google service-account credential "
             "are required"
+        )
+
+    try:
+        github_configured = github_is_configured()
+        if github_configured:
+            get_github_sync_interval()
+    except ValueError:
+        github_configured = False
+        logger.exception("GitHub integration configuration is invalid")
+
+    if github_configured and (
+        bot.github_sync_task is None or bot.github_sync_task.done()
+    ):
+        bot.github_sync_task = asyncio.create_task(
+            run_github_sync_forever(),
+            name="github-sync",
         )
 
     try:
@@ -557,6 +610,37 @@ async def syncdrive(ctx):
 
 @bot.command()
 @commands.is_owner()
+async def syncgithub(ctx):
+    try:
+        configured = github_is_configured()
+    except ValueError as exc:
+        await ctx.send(f"GitHub configuration is invalid: {exc}")
+        return
+    if not configured:
+        await ctx.send("GitHub repository indexing is not configured.")
+        return
+
+    await ctx.send("Starting GitHub repository sync...")
+    try:
+        result = await sync_github()
+    except Exception:
+        logger.exception("Manual GitHub sync failed")
+        await ctx.send("GitHub sync failed. Check the deployment logs.")
+        return
+
+    await ctx.send(
+        "GitHub sync complete: "
+        f"{result.repositories} repository/repositories synchronized, "
+        f"{result.repositories_failed} failed, "
+        f"{result.files_seen} text file(s) found, "
+        f"{result.files_indexed} indexed, "
+        f"{result.files_unchanged} unchanged, "
+        f"{result.files_skipped} skipped."
+    )
+
+
+@bot.command()
+@commands.is_owner()
 async def projectupdate(ctx):
     try:
         channel_id = get_project_update_channel_id()
@@ -598,6 +682,25 @@ async def jira_command_is_available(ctx: commands.Context) -> bool:
         await ctx.send("Jira is not configured on this deployment.")
         return False
     return True
+
+
+def question_requests_github_context(question: str) -> bool:
+    terms = set(re.findall(r"[a-z0-9+#.]+", question.casefold()))
+    return bool(
+        terms
+        & {
+            "branch",
+            "code",
+            "codebase",
+            "commit",
+            "github",
+            "repo",
+            "repos",
+            "repository",
+            "repositories",
+            "source",
+        }
+    )
 
 
 def question_requests_jira_overview(question: str) -> bool:

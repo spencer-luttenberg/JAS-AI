@@ -1,18 +1,20 @@
 import asyncio
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import logging
 import os
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import discord
 
 from ai.client import generate_project_update
 from ai.context import (
     format_drive_context,
+    format_github_context,
     format_jira_context,
     format_project_activity_context,
 )
 from database.drive_files import get_recent_drive_chunks
+from database.github import get_recent_github_chunks
 from database.jira import get_recent_jira_issues
 from database.messages import (
     get_guild_messages_since,
@@ -23,10 +25,10 @@ from database.project_updates import (
     complete_project_update,
     fail_project_update,
 )
+from github.client import get_github_repositories, github_is_configured
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
 from jira.client import get_jira_project_keys, jira_is_configured
 from jira.sync import sync_jira, sync_jira_issue
-
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +129,17 @@ async def publish_project_update(
             )
             drive_context = format_drive_context(drive_chunks)
 
+        github_context = ""
+        if github_is_configured():
+            github_chunks = await get_recent_github_chunks(
+                get_github_repositories(),
+                limit=12,
+            )
+            github_context = format_github_context(
+                github_chunks,
+                max_characters=14_000,
+            )
+
         jira_context = ""
         if jira_is_configured():
             try:
@@ -160,6 +173,7 @@ async def publish_project_update(
             since=since,
             activity_context=activity_context,
             drive_context=drive_context,
+            github_context=github_context,
             jira_context=jira_context,
             web_search_topics=os.getenv("PROJECT_WEB_SEARCH_TOPICS", ""),
         )

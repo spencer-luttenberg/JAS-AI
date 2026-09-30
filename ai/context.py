@@ -3,9 +3,9 @@ import re
 from collections.abc import Sequence
 
 from database.drive_files import StoredDriveChunk
+from database.github import StoredGitHubChunk
 from database.jira import StoredJiraIssue
 from database.messages import StoredMessage
-
 
 SEARCH_STOP_WORDS = {
     "about",
@@ -118,6 +118,30 @@ def format_drive_context(
     if not selected_lines:
         return ""
     return "RELEVANT GOOGLE DRIVE FILE EXCERPTS:\n" + "\n".join(selected_lines)
+
+
+def format_github_context(
+    chunks: Sequence[StoredGitHubChunk],
+    *,
+    max_characters: int = 14_000,
+) -> str:
+    lines = [
+        json.dumps(
+            {
+                "repository": chunk.repository,
+                "default_branch": chunk.default_branch,
+                "path": chunk.path,
+                "source_url": chunk.web_url,
+                "content": chunk.content,
+            },
+            ensure_ascii=True,
+        )
+        for chunk in chunks
+    ]
+    selected_lines = _fit_lines(lines, max_characters, keep_end=False)
+    if not selected_lines:
+        return ""
+    return "RELEVANT GITHUB REPOSITORY EXCERPTS:\n" + "\n".join(selected_lines)
 
 
 def format_jira_context(

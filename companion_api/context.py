@@ -5,11 +5,14 @@ from ai.context import (
     build_history_search_query,
     format_conversation_context,
     format_drive_context,
+    format_github_context,
     format_jira_context,
 )
 from database.drive_files import get_recent_drive_chunks, search_drive_files
+from database.github import get_recent_github_chunks, search_github_files
 from database.jira import get_recent_jira_issues, search_jira_issues
 from database.messages import get_recent_guild_messages, search_messages
+from github.client import get_github_repositories, github_is_configured
 from google_drive.client import get_google_drive_root_ids, google_drive_is_configured
 from jira.client import get_jira_project_keys, jira_is_configured
 
@@ -18,6 +21,7 @@ from jira.client import get_jira_project_keys, jira_is_configured
 class SharedContext:
     discord: str
     drive: str
+    github: str
     jira: str
     source_counts: dict[str, int]
 
@@ -50,6 +54,19 @@ async def build_shared_context(question: str) -> SharedContext:
             else await get_recent_drive_chunks(root_ids, limit=8)
         )
 
+    github_chunks = []
+    if github_is_configured():
+        repositories = get_github_repositories()
+        github_chunks = (
+            await search_github_files(
+                search_query,
+                repositories=repositories,
+                limit=14,
+            )
+            if search_query
+            else await get_recent_github_chunks(repositories, limit=10)
+        )
+
     jira_issues = []
     if jira_is_configured():
         project_keys = get_jira_project_keys()
@@ -75,10 +92,12 @@ async def build_shared_context(question: str) -> SharedContext:
             max_characters=18_000,
         ),
         drive=format_drive_context(drive_chunks, max_characters=12_000),
+        github=format_github_context(github_chunks, max_characters=16_000),
         jira=format_jira_context(jira_issues, max_characters=14_000),
         source_counts={
             "discord_messages": len(relevant_messages) + len(recent_messages),
             "drive_chunks": len(drive_chunks),
+            "github_chunks": len(github_chunks),
             "jira_issues": len(jira_issues),
         },
     )

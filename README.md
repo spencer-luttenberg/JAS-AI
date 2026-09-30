@@ -4,11 +4,12 @@ Jarrett AI is a Discord bot with OpenAI-powered answers and PostgreSQL-backed
 long-term memory. It records every human message and its own replies in the
 Discord channels you approve, imports accessible older history, indexes files
 from Google Drive, synchronizes Jira Cloud issues and activity, and searches
-those sources when someone mentions `@JAS AI` with a question. Jira writes are
-never automatic: a user must confirm each proposed change in Discord.
+GitHub repository files and those other sources when someone mentions `@JAS
+AI` with a question. GitHub access is read-only. Jira writes are never
+automatic: a user must confirm each proposed change in Discord.
 
 This tutorial covers the complete setup for Discord, OpenAI, Railway,
-PostgreSQL, Google Drive, and Jira Cloud.
+PostgreSQL, Google Drive, GitHub, and Jira Cloud.
 
 ## Before You Start
 
@@ -19,6 +20,7 @@ You need:
 - A regenerated Discord bot token that has never been shared publicly
 - An OpenAI API key
 - A Google account and Google Cloud project for Drive access
+- A GitHub account with access to the repositories you want indexed
 - A Jira Cloud site and Atlassian account for Jira integration
 - A Railway project containing the Python bot service
 - This repository connected to the Railway bot service
@@ -113,6 +115,7 @@ the SQL files in `database/migrations/` and creates:
 - `discord_messages`
 - `discord_channel_sync_state`
 - `google_drive_files`, `google_drive_chunks`, and Drive sync tracking tables
+- `github_repositories`, `github_files`, and `github_chunks`
 - `jira_issues`, `jira_comments`, `jira_changes`, and Jira sync/approval tables
 - The indexes used for chronological and full-text history searches
 
@@ -136,6 +139,9 @@ service.
 | `PROJECT_UPDATE_INTERVAL_HOURS` | Optional; defaults to `12` |
 | `PROJECT_NAME` | Optional; defaults to `Jarrett AI` |
 | `PROJECT_WEB_SEARCH_TOPICS` | Optional hints for recurring web research |
+| `GITHUB_TOKEN` | Optional for public repos; required for private repos |
+| `GITHUB_REPOSITORIES` | Optional comma-separated `owner/repository` list |
+| `GITHUB_SYNC_INTERVAL_SECONDS` | Optional; defaults to `900`, minimum `300` |
 | `JIRA_BASE_URL` | Optional; site such as `https://example.atlassian.net` |
 | `JIRA_EMAIL` | Optional; email for the Atlassian account that owns the token |
 | `JIRA_API_TOKEN` | Optional; Atlassian API token, never an account password |
@@ -170,7 +176,7 @@ Do not add spaces, `#` channel-name prefixes, or quotes.
 ## 5. Configure Google Drive Reading
 
 Google Drive access is optional. Without the variables in this section, the
-bot continues to work with Discord history only.
+bot continues to work with its other configured context sources.
 
 This setup uses a read-only Google service account. For a personal **My
 Drive**, put everything the bot should read beneath one top-level folder and
@@ -247,7 +253,68 @@ Images, audio, video, Google Forms, shortcuts, legacy Office formats, and
 other unsupported binaries are skipped. Image-only or scanned PDFs need OCR
 before their text becomes searchable.
 
-## 6. Configure Jira Cloud
+## 6. Configure GitHub Repository Reading
+
+GitHub access is optional and read-only. Jarrett AI indexes supported text
+files from each configured repository's default branch. It does not push code,
+create branches, open pull requests, or modify GitHub.
+
+### Create a Fine-Grained Token
+
+Public repositories can be read without a token, but authenticated requests
+have a much higher rate limit. Private repositories require a token.
+
+1. Open [GitHub fine-grained personal access tokens](https://github.com/settings/personal-access-tokens/new).
+2. Set **Token name** to `jas-ai-repository-reader`.
+3. Choose an expiration date and record it for later rotation.
+4. Under **Resource owner**, select the account or organization that owns the
+   repositories.
+5. Under **Repository access**, select **Only select repositories**, then choose
+   every repository Jarrett AI may read.
+6. Under **Repository permissions**, set **Contents** to **Read-only**.
+   **Metadata** read access is included automatically.
+7. Leave every write permission disabled.
+8. Create the token, copy it once, and store it in a password manager.
+
+An organization may require an owner to approve the token before it can read
+private repositories. A fine-grained token belongs to one resource owner. If
+repositories belong to different organizations, use a separately managed
+credential strategy instead of broadening this token unnecessarily.
+
+### Add Repositories to Railway
+
+On the Railway **JAS-AI bot service**, add:
+
+```text
+GITHUB_TOKEN=github_pat_YOUR_READ_ONLY_TOKEN
+GITHUB_REPOSITORIES=JASStudios/GameProject,JASStudios/JAS-AI
+GITHUB_SYNC_INTERVAL_SECONDS=900
+```
+
+Use `owner/repository`, not a clone URL. Full `https://github.com/owner/repo`
+URLs are also accepted. Do not add branch names; each repository's current
+default branch is detected automatically.
+
+To add another repository later:
+
+1. Add that repository to the fine-grained token's **Repository access** list.
+2. Append `,owner/new-repository` to `GITHUB_REPOSITORIES`.
+3. Redeploy the Railway bot service.
+
+The next startup sync imports the new repository without rebuilding existing
+unchanged files. Removed repositories are removed from the local search index.
+You can run `!syncgithub` as the Discord application owner to refresh
+immediately.
+
+The index includes common source, configuration, documentation, web, script,
+Unreal `.uproject`, and `.uplugin` files. It skips binaries and Unreal-generated
+folders such as `Binaries`, `DerivedDataCache`, `Intermediate`, and `Saved`.
+It also excludes `.env` files, private keys, obvious credential files,
+dependency folders, generated output, lock files, and files larger than 1 MB.
+Optional limits are `GITHUB_MAX_FILE_BYTES` and
+`GITHUB_MAX_EXTRACTED_CHARACTERS`.
+
+## 7. Configure Jira Cloud
 
 Jira is optional. If its four required variables are absent, the Discord,
 Drive, and project-update features continue to work. This integration supports
@@ -324,7 +391,7 @@ modify an issue outside those projects, even if the Jira account has broader
 access. Apply the Railway variable changes and redeploy after completing the
 next section.
 
-## 7. Configure and Deploy the Bot Service
+## 8. Configure and Deploy the Bot Service
 
 Railway normally detects the Python start command automatically. To set it
 explicitly:
@@ -343,7 +410,7 @@ explicitly:
 Railway installs `requirements.txt`, starts `bot.py`, connects to PostgreSQL,
 and applies all database migrations automatically.
 
-## 8. Watch the First Deployment
+## 9. Watch the First Deployment
 
 Open the bot service's deployment logs. A successful startup should include
 messages similar to:
@@ -354,6 +421,7 @@ Applying database migration 002_add_long_term_search.sql
 Applying database migration 003_create_google_drive_index.sql
 Applying database migration 004_create_project_update_state.sql
 Applying database migration 005_create_jira_integration.sql
+Applying database migration 006_create_github_index.sql
 Logged in as Jarrett AI
 Connected to 1 server(s)
 Recording 2 configured channel(s)
@@ -361,6 +429,7 @@ Starting full backfill for Discord channel 123456789012345678
 Finished full backfill for channel 123456789012345678; stored 850 message(s)
 Starting Google Drive sync for folder 1AbCdEfGhIjKlMnOp
 Google Drive sync complete: 1 root(s), 42 file(s) seen, 40 indexed, 0 unchanged, 2 skipped
+GitHub sync complete: 2 repository/repositories, 0 failed, 185 file(s) seen, 185 indexed, 0 unchanged, 0 skipped
 Jira sync completed for JAS: 28 issue(s)
 ```
 
@@ -384,7 +453,11 @@ The Google Drive sync runs in the background at startup and then at the
 configured interval. A skipped-file warning includes the file name and reason;
 it does not stop the rest of the sync.
 
-## 9. Test the Bot in Discord
+GitHub follows the same pattern. The first run downloads supported files from
+each default branch. Later runs retrieve the repository tree but download only
+files whose Git blob SHA changed.
+
+## 10. Test the Bot in Discord
 
 In an approved channel, send:
 
@@ -407,6 +480,15 @@ one of the files:
 
 When an answer relies on Drive content, the bot is instructed to name the
 source file and include its Google Drive link when useful.
+
+After GitHub sync completes, test repository context with a distinctive class,
+function, subsystem, or configuration name:
+
+```text
+@JAS AI Where is EOS configured in our repository, and what does that code do?
+```
+
+The answer should name the repository and file and link to GitHub when useful.
 
 Then test OpenAI. Type `@JAS AI`, select the bot from Discord's autocomplete so
 it becomes a real mention, and add the question after it:
@@ -466,7 +548,7 @@ Click **Cancel** to verify that nothing changes. Run it again and click
 **Confirm** to apply it. Only the Discord user who issued the command can use
 that request's buttons, and an unconfirmed request expires after 15 minutes.
 
-## 10. Verify the PostgreSQL Data
+## 11. Verify the PostgreSQL Data
 
 The most reliable command-line method is Railway CLI plus PostgreSQL's `psql`
 client.
@@ -539,6 +621,25 @@ SELECT COUNT(*) AS searchable_drive_chunks
 FROM google_drive_chunks;
 ```
 
+Check configured GitHub repositories and synchronization errors:
+
+```sql
+SELECT full_name, default_branch, file_count, last_synced_at, last_error
+FROM github_repositories
+ORDER BY full_name;
+```
+
+Check searchable repository files and chunks:
+
+```sql
+SELECT repository, path, indexed_at, last_error
+FROM github_files
+ORDER BY repository, path;
+
+SELECT COUNT(*) AS searchable_github_chunks
+FROM github_chunks;
+```
+
 Check the scheduled project report state:
 
 ```sql
@@ -577,7 +678,7 @@ Exit `psql` with:
 \q
 ```
 
-## 11. Run Locally (Optional)
+## 12. Run Locally (Optional)
 
 Railway deployment is the normal always-on setup. Local testing requires a
 database URL reachable from your computer.
@@ -609,6 +710,8 @@ $env:GOOGLE_DRIVE_FOLDER_IDS="YOUR_GOOGLE_DRIVE_FOLDER_ID"
 $env:GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=[Convert]::ToBase64String(
     [IO.File]::ReadAllBytes("$HOME\Downloads\jas-ai-drive-reader.json")
 )
+$env:GITHUB_TOKEN="YOUR_READ_ONLY_GITHUB_TOKEN"
+$env:GITHUB_REPOSITORIES="owner/repository,owner/another-repository"
 $env:PROJECT_UPDATE_CHANNEL_ID="YOUR_UPDATE_CHANNEL_ID"
 $env:PROJECT_UPDATE_INTERVAL_HOURS="12"
 $env:PROJECT_NAME="YOUR_PROJECT_NAME"
@@ -625,7 +728,7 @@ python bot.py
 PowerShell `$env:` values apply only to the current terminal session. Opening a
 new terminal requires setting them again.
 
-## 12. Add Another Channel Later
+## 13. Add Another Channel Later
 
 1. Give the bot **View Channel**, **Read Message History**, and **Send
    Messages** permissions in the new channel.
@@ -637,11 +740,12 @@ new terminal requires setting them again.
 Existing channel sync state is preserved. Only the newly added channel needs a
 full import.
 
-## 13. Add Scheduled Project Intelligence Updates
+## 14. Add Scheduled Project Intelligence Updates
 
 Jarrett AI can post a proactive report to a dedicated Discord channel every 12
 hours. Each report reviews stored Discord activity, possible older follow-ups,
-recent Google Drive material, recent Jira activity, and current web research.
+recent Google Drive material, GitHub repository excerpts, recent Jira activity,
+and current web research.
 It includes:
 
 - Status, open questions, blockers, and possible follow-ups
@@ -693,10 +797,11 @@ The result is posted in `PROJECT_UPDATE_CHANNEL_ID`. If you also want discussion
 inside the update channel recorded as long-term memory, add its ID to
 `LISTEN_CHANNEL_IDS`; that is optional for scheduled posting.
 
-## 14. Connect the Local Unreal Companion
+## 15. Connect the Local Unreal Companion
 
 The separate `JAS-UE-Companion` repository gives developers a local chat UI
-with the same stored Discord, Google Drive, and Jira context as this service.
+with the same stored Discord, Google Drive, GitHub, and Jira context as this
+service.
 The local app talks directly to an authenticated HTTP API on Railway. It does
 not send messages through Discord.
 
@@ -742,7 +847,8 @@ key through a password manager. To revoke access, remove that key from
 ### What the API Can Access
 
 - It searches messages already retained from the configured Discord server.
-- It searches the same synchronized Drive file chunks and Jira issue activity.
+- It searches the same synchronized Drive files, GitHub code, and Jira issue
+  activity.
 - It can ask OpenAI to answer or propose one of the Unreal tools advertised by
   the local client.
 - It cannot connect to Unreal directly and exposes no endpoint for dumping the
@@ -767,11 +873,17 @@ Instead:
    history for relevant messages.
 4. The bot also loads the 15 most recent messages from the current channel.
 5. PostgreSQL searches indexed Google Drive chunks for the same topic.
-6. PostgreSQL searches synchronized Jira summaries, descriptions, comments,
+6. PostgreSQL searches synchronized GitHub files for the same topic.
+7. PostgreSQL searches synchronized Jira summaries, descriptions, comments,
    and change history for the same topic.
-7. Relevant old messages, recent conversation, Drive excerpts, Jira activity,
-   and the current question are sent to OpenAI.
-8. The answer is posted to Discord and stored like other Jarrett AI replies.
+8. Relevant old messages, recent conversation, Drive and GitHub excerpts, Jira
+   activity, and the current question are sent to OpenAI.
+9. The answer is posted to Discord and stored like other Jarrett AI replies.
+
+GitHub sync runs at startup and every 15 minutes by default. It reads only the
+default branch and uses Git blob SHAs to avoid downloading unchanged files.
+Appending a repository to `GITHUB_REPOSITORIES` adds it on the next deployment;
+removing one removes its cached index.
 
 Jira sync runs once when the bot starts and every 10 minutes by default. The
 first run imports every issue visible to the Jira account in the configured
@@ -812,6 +924,8 @@ questions.
 - `!hello` mentions the user who ran the command
 - `!ask <question>` provides a command-based fallback
 - `!syncdrive` starts an immediate Drive refresh for the Discord application
+  owner
+- `!syncgithub` starts an immediate GitHub refresh for the Discord application
   owner
 - `!projectupdate` immediately generates a project report for the Discord
   application owner
@@ -906,6 +1020,29 @@ replace `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, and redeploy. Do not add quotes or
 the variable name to its value. Delete the old key in Google Cloud if it may
 have been exposed.
 
+### GitHub Sync Returns `404 Not Found`
+
+Confirm each `GITHUB_REPOSITORIES` entry is exactly `owner/repository`. For a
+private repository, edit the fine-grained token and add that repository under
+**Repository access**. If an organization requires token approval, confirm an
+owner approved it. Then redeploy and run `!syncgithub` as the Discord
+application owner.
+
+### GitHub Sync Returns `401` or `403`
+
+Replace expired or revoked credentials in `GITHUB_TOKEN`. The token needs only
+**Contents: Read-only** and automatic metadata access. A rate-limit error will
+also return `403`; authenticated syncs receive a larger allowance, and the bot
+will retry on its next scheduled interval.
+
+### GitHub Files Are Missing From Answers
+
+Check the `github_repositories` and `github_files` verification queries above.
+Only supported text files on the default branch are indexed. Binary assets,
+generated directories, likely credential files, lock files, and oversized
+files are intentionally excluded. Include distinctive class, function, file,
+or subsystem names in the question for better PostgreSQL search results.
+
 ### Scheduled Project Updates Do Not Appear
 
 Check that:
@@ -992,7 +1129,8 @@ python -m pip check
 ## Security and Privacy
 
 - Never commit or share `DISCORD_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`,
-  `DATABASE_PUBLIC_URL`, `JIRA_API_TOKEN`, `COMPANION_API_KEYS`, or
+  `DATABASE_PUBLIC_URL`, `GITHUB_TOKEN`, `JIRA_API_TOKEN`,
+  `COMPANION_API_KEYS`, or
   service-account credentials.
 - Treat the Google service-account JSON as a password. Never commit it, post
   it in Discord, or include it in screenshots.
@@ -1001,9 +1139,12 @@ python -m pip check
 - Review your retention policy before storing private or sensitive discussion.
 - Keep PostgreSQL private unless public access is temporarily needed for local
   tools.
-- Scheduled reports and answers may send selected Discord, Drive, and Jira
-  excerpts to OpenAI. Reports also use live web search. Do not index material
-  that report readers are not allowed to access.
+- Scheduled reports and answers may send selected Discord, Drive, GitHub, and
+  Jira excerpts to OpenAI. Reports also use live web search. Do not index
+  material that report readers are not allowed to access.
+- Give the GitHub token only **Contents: Read-only** access to specifically
+  selected repositories. Rotate it before expiration and revoke it immediately
+  if exposed.
 - Use a dedicated Jira account, limit it to the configured projects, rotate its
   API token before expiration, and revoke the token immediately if exposed.
 
@@ -1016,6 +1157,9 @@ python -m pip check
 - [Google service-account authentication](https://developers.google.com/identity/protocols/oauth2/service-account)
 - [Google Drive file search](https://developers.google.com/workspace/drive/api/guides/search-files)
 - [Google Drive downloads and exports](https://developers.google.com/workspace/drive/api/guides/manage-downloads)
+- [GitHub fine-grained personal access tokens](https://docs.github.com/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+- [GitHub REST tree endpoint](https://docs.github.com/rest/git/trees)
+- [GitHub REST blob endpoint](https://docs.github.com/rest/git/blobs)
 - [Jira Cloud REST API v3](https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/)
 - [Jira API-token basic authentication](https://developer.atlassian.com/cloud/jira/service-desk/basic-auth-for-rest-apis/)
 - [Atlassian API-token management](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)
