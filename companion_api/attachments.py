@@ -87,6 +87,7 @@ def attachment_config() -> dict[str, Any]:
         "max_files": MAX_ATTACHMENTS,
         "max_file_bytes": MAX_FILE_BYTES,
         "max_total_bytes": MAX_TOTAL_BYTES,
+        "max_text_characters": MAX_TEXT_CHARACTERS,
     }
 
 

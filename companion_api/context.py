@@ -26,6 +26,55 @@ class SharedContext:
     source_counts: dict[str, int]
 
 
+def format_shared_context(
+    context: SharedContext,
+    *,
+    max_characters: int = 24_000,
+) -> str:
+    """Render useful project memory within a stable, caller-selected budget."""
+    if not 4_000 <= max_characters <= 30_000:
+        raise ValueError("max_characters must be between 4,000 and 30,000")
+    sections = [
+        ("Discord", context.discord, 0.32),
+        ("GitHub", context.github, 0.30),
+        ("Google Drive", context.drive, 0.20),
+        ("Jira", context.jira, 0.18),
+    ]
+    available = [
+        (title, text.strip(), weight)
+        for title, text, weight in sections
+        if text.strip()
+    ]
+    if not available:
+        return ""
+
+    # Reserve a weighted slice for every populated source, then let shorter
+    # sources donate their unused space to the remaining relevant excerpts.
+    heading_cost = sum(len(f"## {title}\n\n") for title, _, _ in available)
+    content_budget = max(0, max_characters - heading_cost - (len(available) - 1) * 2)
+    weight_total = sum(weight for _, _, weight in available)
+    allocations = {
+        title: min(len(text), int(content_budget * weight / weight_total))
+        for title, text, weight in available
+    }
+    unused = content_budget - sum(allocations.values())
+    for title, text, _ in available:
+        if unused <= 0:
+            break
+        extra = min(len(text) - allocations[title], unused)
+        allocations[title] += extra
+        unused -= extra
+
+    rendered = []
+    for title, text, _ in available:
+        limit = allocations[title]
+        excerpt = text[:limit]
+        if limit < len(text) and limit > 1:
+            excerpt = excerpt[:-1].rstrip() + "…"
+        rendered.append(f"## {title}\n\n{excerpt}")
+    return "\n\n".join(rendered)[:max_characters]
+
+
 def get_companion_guild_id() -> int:
     value = os.getenv("COMPANION_GUILD_ID", "").strip()
     if not value:

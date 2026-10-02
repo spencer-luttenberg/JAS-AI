@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import web
+from database.db import get_pool
+from github.client import github_is_configured
+from google_drive.client import google_drive_is_configured
+from jira.client import jira_is_configured
 
 from companion_api.agent import ask_companion
 from companion_api.attachments import (
@@ -14,11 +18,11 @@ from companion_api.attachments import (
     validate_attachment_budget,
     validate_attachments,
 )
-from companion_api.context import build_shared_context, get_companion_guild_id
-from database.db import get_pool
-from github.client import github_is_configured
-from google_drive.client import google_drive_is_configured
-from jira.client import jira_is_configured
+from companion_api.context import (
+    build_shared_context,
+    format_shared_context,
+    get_companion_guild_id,
+)
 
 logger = logging.getLogger(__name__)
 MAX_HISTORY_ITEMS = 40
@@ -76,6 +80,7 @@ def create_app(api_keys: tuple[str, ...] | None = None) -> web.Application:
     app.router.add_get("/health", _health)
     app.router.add_get("/api/v1/health", _health)
     app.router.add_post("/api/v1/chat", _chat)
+    app.router.add_post("/api/v1/context", _context)
     return app
 
 
@@ -129,7 +134,7 @@ async def _health(request: web.Request) -> web.Response:
             "google_drive": google_drive_is_configured(),
             "github": github_is_configured(),
             "jira": jira_is_configured(),
-            "capabilities": {"attachments": True},
+            "capabilities": {"attachments": True, "project_context": True},
         },
         status=status,
     )
@@ -161,7 +166,8 @@ async def _chat(request: web.Request) -> web.Response:
     history = _validate_history(body.get("history", []))
     try:
         validate_attachment_budget(
-            attachments + [file for item in history for file in item.get("attachments", [])]
+            attachments
+            + [file for item in history for file in item.get("attachments", [])]
         )
     except ValueError as exc:
         raise web.HTTPBadRequest(text=str(exc)) from exc
@@ -190,6 +196,44 @@ async def _chat(request: web.Request) -> web.Response:
             "arguments": answer.tool_call.arguments,
         }
     return web.json_response(response)
+
+
+async def _context(request: web.Request) -> web.Response:
+    """Return retrieved project memory without spending a model request."""
+    try:
+        get_companion_guild_id()
+    except RuntimeError as exc:
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": str(exc)}),
+            content_type="application/json",
+        ) from exc
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="Request body must be JSON") from exc
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text="Request body must be a JSON object")
+    query = _required_string(body, "query", MAX_MESSAGE_CHARACTERS)
+    max_characters = body.get("max_characters", 24_000)
+    if not isinstance(max_characters, int) or isinstance(max_characters, bool):
+        raise web.HTTPBadRequest(text="max_characters must be an integer")
+    try:
+        semaphore = request.app[CHAT_SEMAPHORE_KEY]
+        async with semaphore:
+            shared_context = await build_shared_context(query)
+            rendered = format_shared_context(
+                shared_context,
+                max_characters=max_characters,
+            )
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    return web.json_response(
+        {
+            "context": rendered,
+            "characters": len(rendered),
+            "source_counts": shared_context.source_counts,
+        }
+    )
 
 
 def _required_string(body: dict[str, Any], name: str, max_length: int) -> str:
@@ -225,7 +269,9 @@ def _validate_history(value: Any) -> list[dict[str, Any]]:
             raise web.HTTPBadRequest(text=str(exc)) from exc
         if attachments:
             if role != "user":
-                raise web.HTTPBadRequest(text="Only user messages can contain attachments")
+                raise web.HTTPBadRequest(
+                    text="Only user messages can contain attachments"
+                )
             history[-1]["attachments"] = attachments
 
     if total_characters > MAX_HISTORY_CHARACTERS:
